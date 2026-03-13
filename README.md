@@ -55,16 +55,61 @@ A backup file is also maintained as:
 
 If a malformed JSON is found, the app tries to back it up as `.corrupt-<timestamp>.bak` and recreates a clean file.
 
-## Build Packaging (basic)
+## Build Packaging
 
-This template is ready to be packaged with tools such as `electron-builder` or `electron-forge`.
+The project is configured for `electron-builder` and outputs packaged apps into `dist/`.
 
-Typical steps:
+Install dependencies:
 
-1. Add packager dependency (for example `electron-builder`).
-2. Add build config in `package.json`.
-3. Add scripts like `build:mac` and `build:win`.
-4. Run platform-specific build commands.
+```bash
+npm install
+```
+
+Build macOS app:
+
+```bash
+npm run build:mac
+```
+
+Expected output includes a macOS app bundle and installer, for example:
+
+- `dist/TaskNotes.app`
+- `dist/TaskNotes-1.0.0.dmg`
+
+Build Windows package:
+
+```bash
+npm run build:win
+```
+
+Expected output includes Windows artifacts such as:
+
+- `dist/TaskNotes Setup 1.0.0.exe`
+- `dist/TaskNotes 1.0.0.exe`
+
+Important note about Windows builds from macOS:
+
+- `electron-builder` can package some Windows targets from macOS, but Windows installers are most reliable when built on Windows or on CI.
+- If `build:win` fails on macOS, the recommended solution is to run the same command on a Windows machine, GitHub Actions runner, or VM.
+
+To put the app on Desktop after packaging:
+
+- macOS: drag `dist/TaskNotes.app` to Desktop or Applications.
+- Windows: use the generated installer `.exe`, or place the portable `.exe` on Desktop.
+
+## GitHub Actions
+
+The repository includes a workflow at `.github/workflows/build.yml`.
+
+It runs:
+
+- on manual trigger from GitHub Actions
+- automatically when a tag like `v1.0.0` is pushed
+
+Produced artifacts:
+
+- macOS: `.dmg`, `.zip`
+- Windows: installer `.exe`, portable `.exe`
 
 ## Keyboard Shortcuts
 
