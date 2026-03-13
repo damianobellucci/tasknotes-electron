@@ -163,6 +163,85 @@ button.ghost {
   box-shadow: var(--shadow-soft);
 }
 
+.global-tags-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 30px;
+}
+
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #c4d7e6;
+  background: #eef6fc;
+  color: #1e4e70;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+}
+
+.tag-pill.active {
+  border-color: #0f4f78;
+  background: #d8ecfa;
+  font-weight: 600;
+}
+
+.tag-active-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tag-pill.unavailable {
+  opacity: 0.55;
+}
+
+.tag-pill.unavailable button {
+  cursor: not-allowed;
+}
+
+.tag-pill button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.82rem;
+}
+
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag-editor input {
+  width: 124px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 7px;
+  font-size: 0.78rem;
+}
+
+.tag-editor select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-main);
+  min-height: 30px;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+}
+
+.tag-editor .ghost {
+  padding: 5px 8px;
+  font-size: 0.76rem;
+}
+
 .stats-title {
   font-weight: 700;
   margin-bottom: 7px;

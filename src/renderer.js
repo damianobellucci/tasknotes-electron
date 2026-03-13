@@ -11,7 +11,9 @@ const state = {
   version: 1,
   view: 'tasks',
   taskFilter: 'all',
+  tagFilter: 'all',
   search: '',
+  tags: [],
   dataFilePath: '',
   defaultDataFilePath: '',
   activeDataFileDisplayName: '',
@@ -46,6 +48,10 @@ function bindRefs() {
   refs.taskFilterWrap = document.getElementById('taskFilterWrap');
   refs.taskFilterSelect = document.getElementById('taskFilterSelect');
   refs.searchInput = document.getElementById('searchInput');
+  refs.tagFilterSelect = document.getElementById('tagFilterSelect');
+  refs.newTagInput = document.getElementById('newTagInput');
+  refs.addTagButton = document.getElementById('addTagButton');
+  refs.globalTagsBar = document.getElementById('globalTagsBar');
   refs.exportButton = document.getElementById('exportButton');
   refs.importButton = document.getElementById('importButton');
   refs.selectDataFileButton = document.getElementById('selectDataFileButton');
@@ -98,6 +104,19 @@ function bindStaticEvents() {
     render();
   });
 
+  refs.tagFilterSelect.addEventListener('change', () => {
+    state.tagFilter = refs.tagFilterSelect.value;
+    render();
+  });
+
+  refs.addTagButton.addEventListener('click', onCreateGlobalTag);
+  refs.newTagInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      onCreateGlobalTag();
+    }
+  });
+
   refs.exportButton.addEventListener('click', onExportData);
   refs.importButton.addEventListener('click', onImportData);
   refs.selectDataFileButton.addEventListener('click', onSelectDataFile);
@@ -147,8 +166,27 @@ function switchView(view) {
 
 function render() {
   renderSortControls();
+  renderTagFilterControls();
   renderStats();
+  renderGlobalTagsBar();
   renderList();
+}
+
+function renderTagFilterControls() {
+  const options = ['<option value="all">All tags</option>'];
+
+  state.tags.forEach((tag) => {
+    const usageCount = getTagUsageCount(tag);
+    const disabledAttr = usageCount === 0 ? ' disabled' : '';
+    options.push(`<option value="${escapeHtml(tag)}"${disabledAttr}>${escapeHtml(tag)}${usageCount > 0 ? ` (${usageCount})` : ''}</option>`);
+  });
+
+  refs.tagFilterSelect.innerHTML = options.join('');
+  const selectedTagAvailable = state.tags.includes(state.tagFilter) && getTagUsageCount(state.tagFilter) > 0;
+  refs.tagFilterSelect.value = selectedTagAvailable ? state.tagFilter : 'all';
+  if (!selectedTagAvailable) {
+    state.tagFilter = 'all';
+  }
 }
 
 function renderSortControls() {
@@ -258,6 +296,12 @@ function renderCard(item) {
 
       <div class="main-col">
         <textarea class="text-input" data-action="edit-text" placeholder="${isTask ? 'Task text...' : 'Note text...'}">${escapeHtml(item.text)}</textarea>
+        <div class="tag-editor">
+          ${renderItemTagPills(item)}
+          ${renderTagQuickPicker(item)}
+          <input type="text" data-action="add-tag-input" placeholder="add tag" />
+          <button class="ghost" data-action="add-tag">Add</button>
+        </div>
         <div class="meta-row">
           ${isTask ? `<span>Priority: P${item.priority}</span>` : ''}
           <span>Created: ${formatDate(item.createdAt)}</span>
@@ -290,6 +334,7 @@ function renderTrashCard(item) {
     <article class="card trash-card" data-id="${escapeHtml(item.id)}">
       <div class="main-col">
         <textarea class="text-input" readonly>${escapeHtml(item.text)}</textarea>
+        <div class="tag-editor">${renderItemTagPills(item, true)}</div>
         <div class="meta-row">
           <span>Type: ${kind}</span>
           <span>Deleted: ${formatDate(item.deletedAt)}</span>
@@ -301,6 +346,39 @@ function renderTrashCard(item) {
         <button class="restore-btn" data-action="restore">Restore</button>
       </div>
     </article>
+  `;
+}
+
+function renderItemTagPills(item, readOnly = false) {
+  const tags = Array.isArray(item.tags) ? item.tags : [];
+  if (!tags.length) {
+    return '<span class="data-picker-meta">No tags</span>';
+  }
+
+  return tags
+    .map((tag) => {
+      if (readOnly) {
+        return `<span class="tag-pill">${escapeHtml(tag)}</span>`;
+      }
+
+      return `<span class="tag-pill">${escapeHtml(tag)} <button title="Remove tag" data-action="remove-tag" data-tag="${escapeHtml(tag)}">x</button></span>`;
+    })
+    .join('');
+}
+
+function renderTagQuickPicker(item) {
+  const assigned = new Set((item.tags || []).map((tag) => String(tag).toLowerCase()));
+  const candidates = state.tags.filter((tag) => !assigned.has(String(tag).toLowerCase()));
+
+  if (!candidates.length) {
+    return '';
+  }
+
+  return `
+    <select data-action="quick-tag-select" title="Quick add existing tag">
+      <option value="">+ tag</option>
+      ${candidates.map((tag) => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`).join('')}
+    </select>
   `;
 }
 
@@ -363,6 +441,40 @@ function bindDynamicEvents(items) {
 
     const deleteButton = card.querySelector('[data-action="delete"]');
     deleteButton.addEventListener('click', () => deleteItem(data.type, id));
+
+    const addTagInput = card.querySelector('[data-action="add-tag-input"]');
+    const addTagButton = card.querySelector('[data-action="add-tag"]');
+    const quickTagSelect = card.querySelector('[data-action="quick-tag-select"]');
+    const addTag = () => {
+      const value = addTagInput.value;
+      addTagToItem(data.type, id, value);
+      addTagInput.value = '';
+    };
+
+    addTagButton.addEventListener('click', addTag);
+    addTagInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addTag();
+      }
+    });
+
+    if (quickTagSelect) {
+      quickTagSelect.addEventListener('change', () => {
+        const selectedTag = quickTagSelect.value;
+        if (!selectedTag) {
+          return;
+        }
+
+        addTagToItem(data.type, id, selectedTag);
+      });
+    }
+
+    card.querySelectorAll('[data-action="remove-tag"]').forEach((removeButton) => {
+      removeButton.addEventListener('click', () => {
+        removeTagFromItem(data.type, id, removeButton.dataset.tag);
+      });
+    });
 
     if (canManualReorder()) {
       card.addEventListener('dragstart', (event) => {
@@ -858,6 +970,7 @@ async function waitForSaveIdle() {
 function applyLoadedData(data) {
   state.tasks = Array.isArray(data?.tasks) ? data.tasks : [];
   state.notes = Array.isArray(data?.notes) ? data.notes : [];
+  state.tags = sanitizeTagList(data?.tags);
   state.settings = {
     ...state.settings,
     ...data?.settings
@@ -898,7 +1011,15 @@ function getVisibleTasks() {
   }
 
   if (state.search) {
-    tasks = tasks.filter((task) => task.text.toLowerCase().includes(state.search));
+    tasks = tasks.filter((task) => {
+      const textMatch = task.text.toLowerCase().includes(state.search);
+      const tagMatch = (task.tags || []).some((tag) => tag.toLowerCase().includes(state.search));
+      return textMatch || tagMatch;
+    });
+  }
+
+  if (state.tagFilter !== 'all') {
+    tasks = tasks.filter((task) => (task.tags || []).includes(state.tagFilter));
   }
 
   return sortItems(tasks, sortMode, true);
@@ -907,7 +1028,14 @@ function getVisibleTasks() {
 function getVisibleNotes() {
   let notes = state.notes.filter((note) => !note.isDeleted);
   if (state.search) {
-    notes = notes.filter((note) => note.text.toLowerCase().includes(state.search));
+    notes = notes.filter((note) => {
+      const textMatch = note.text.toLowerCase().includes(state.search);
+      const tagMatch = (note.tags || []).some((tag) => tag.toLowerCase().includes(state.search));
+      return textMatch || tagMatch;
+    });
+  }
+  if (state.tagFilter !== 'all') {
+    notes = notes.filter((note) => (note.tags || []).includes(state.tagFilter));
   }
   return sortItems(notes, state.settings.noteSort, false);
 }
@@ -915,7 +1043,14 @@ function getVisibleNotes() {
 function getVisibleTrashItems() {
   let deleted = [...state.tasks, ...state.notes].filter((item) => item.isDeleted);
   if (state.search) {
-    deleted = deleted.filter((item) => item.text.toLowerCase().includes(state.search));
+    deleted = deleted.filter((item) => {
+      const textMatch = item.text.toLowerCase().includes(state.search);
+      const tagMatch = (item.tags || []).some((tag) => tag.toLowerCase().includes(state.search));
+      return textMatch || tagMatch;
+    });
+  }
+  if (state.tagFilter !== 'all') {
+    deleted = deleted.filter((item) => (item.tags || []).includes(state.tagFilter));
   }
   return deleted.sort((a, b) => new Date(b.deletedAt || 0) - new Date(a.deletedAt || 0));
 }
@@ -942,9 +1077,9 @@ function sortItems(items, sortMode, supportsPriority) {
 
 function canManualReorder() {
   if (state.view === 'tasks') {
-    return state.settings.taskSort === 'manual' && state.taskFilter === 'all' && !state.search;
+    return state.settings.taskSort === 'manual' && state.taskFilter === 'all' && state.tagFilter === 'all' && !state.search;
   }
-  return state.settings.noteSort === 'manual' && !state.search;
+  return state.settings.noteSort === 'manual' && state.tagFilter === 'all' && !state.search;
 }
 
 function findItemById(view, id) {
@@ -956,9 +1091,215 @@ function getSerializableState() {
   return {
     tasks: state.tasks,
     notes: state.notes,
+    tags: state.tags,
     settings: state.settings,
     version: state.version
   };
+}
+
+function renderGlobalTagsBar() {
+  if (!state.tags.length) {
+    refs.globalTagsBar.innerHTML = '';
+    return;
+  }
+
+  const chips = state.tags
+    .map((tag) => {
+      const usageCount = getTagUsageCount(tag);
+      const unavailableClass = usageCount === 0 ? 'unavailable' : '';
+      const disabledAttr = usageCount === 0 ? 'disabled aria-disabled="true"' : '';
+      const title = usageCount === 0
+        ? 'Nessuna card/nota collegata'
+        : `Filtra per "${tag}"`;
+
+      return `
+        <span class="tag-pill ${unavailableClass}">
+          <button data-action="filter-tag" data-tag="${escapeHtml(tag)}" title="${escapeHtml(title)}" ${disabledAttr}>${escapeHtml(tag)}</button>
+        </span>
+      `;
+    })
+    .join('');
+
+  const activeChip = state.tagFilter !== 'all'
+    ? `<span class="tag-pill active tag-active-chip">
+        <strong>${escapeHtml(state.tagFilter)}</strong>
+        <button data-action="clear-tag-filter" title="Rimuovi filtro">×</button>
+       </span>`
+    : '';
+
+  refs.globalTagsBar.innerHTML = activeChip + chips;
+
+  const clearBtn = refs.globalTagsBar.querySelector('[data-action="clear-tag-filter"]');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      state.tagFilter = 'all';
+      refs.tagFilterSelect.value = 'all';
+      render();
+    });
+  }
+
+  refs.globalTagsBar.querySelectorAll('[data-action="filter-tag"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.disabled) {
+        return;
+      }
+
+      state.tagFilter = button.dataset.tag;
+      render();
+    });
+
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      if (button.disabled) {
+        return;
+      }
+
+      confirmAndDeleteTag(button.dataset.tag);
+    });
+  });
+}
+
+function getTagUsageCount(tag) {
+  const normalized = normalizeTag(tag).toLowerCase();
+  if (!normalized) {
+    return 0;
+  }
+
+  return [...state.tasks, ...state.notes].filter((item) => {
+    if (item.isDeleted) {
+      return false;
+    }
+
+    return (item.tags || []).some((itemTag) => normalizeTag(itemTag).toLowerCase() === normalized);
+  }).length;
+}
+
+function confirmAndDeleteTag(rawTag) {
+  const normalized = normalizeTag(rawTag);
+  if (!normalized) {
+    return;
+  }
+
+  const usageCount = getTagUsageCount(normalized);
+  const confirmed = window.confirm(
+    `Delete tag "${normalized}" everywhere?\n\nThis will remove it from all tasks and notes${usageCount > 0 ? ` (${usageCount} linked item${usageCount === 1 ? '' : 's'})` : ''}.`
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  deleteGlobalTag(normalized);
+}
+
+function deleteGlobalTag(rawTag) {
+  const normalized = normalizeTag(rawTag);
+  if (!normalized) {
+    return;
+  }
+
+  state.tags = state.tags.filter((tag) => tag.toLowerCase() !== normalized.toLowerCase());
+  state.tasks.forEach((task) => {
+    task.tags = (task.tags || []).filter((tag) => normalizeTag(tag).toLowerCase() !== normalized.toLowerCase());
+  });
+  state.notes.forEach((note) => {
+    note.tags = (note.tags || []).filter((tag) => normalizeTag(tag).toLowerCase() !== normalized.toLowerCase());
+  });
+
+  if (state.tagFilter.toLowerCase() === normalized.toLowerCase()) {
+    state.tagFilter = 'all';
+  }
+
+  queueSave();
+  render();
+  setStatus('Tag deleted');
+}
+
+function onCreateGlobalTag() {
+  const next = refs.newTagInput.value;
+  const normalized = normalizeTag(next);
+  if (!normalized) {
+    setStatus('Type a valid tag first');
+    return;
+  }
+
+  if (state.tags.some((tag) => tag.toLowerCase() === normalized.toLowerCase())) {
+    setStatus('Tag already exists');
+    refs.newTagInput.value = '';
+    return;
+  }
+
+  state.tags.push(normalized);
+  state.tags = sanitizeTagList(state.tags);
+  refs.newTagInput.value = '';
+  queueSave();
+  render();
+  setStatus('Tag created');
+}
+
+function addTagToItem(type, id, rawTag) {
+  const item = (type === 'task' ? state.tasks : state.notes).find((entry) => entry.id === id);
+  if (!item) {
+    return;
+  }
+
+  const normalized = normalizeTag(rawTag);
+  if (!normalized) {
+    return;
+  }
+
+  item.tags = sanitizeTagList([...(item.tags || []), normalized]);
+  state.tags = sanitizeTagList([...state.tags, normalized]);
+  item.updatedAt = new Date().toISOString();
+  queueSave();
+  render();
+}
+
+function removeTagFromItem(type, id, rawTag) {
+  const item = (type === 'task' ? state.tasks : state.notes).find((entry) => entry.id === id);
+  if (!item) {
+    return;
+  }
+
+  const normalized = normalizeTag(rawTag);
+  if (!normalized) {
+    return;
+  }
+
+  item.tags = (item.tags || []).filter((tag) => tag.toLowerCase() !== normalized.toLowerCase());
+  item.updatedAt = new Date().toISOString();
+  queueSave();
+  render();
+}
+
+function normalizeTag(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+}
+
+function sanitizeTagList(rawTags) {
+  if (!Array.isArray(rawTags)) {
+    return [];
+  }
+
+  const dedupe = new Set();
+  const tags = [];
+
+  rawTags.forEach((tag) => {
+    const normalized = normalizeTag(tag);
+    if (!normalized) {
+      return;
+    }
+
+    const key = normalized.toLowerCase();
+    if (dedupe.has(key)) {
+      return;
+    }
+
+    dedupe.add(key);
+    tags.push(normalized);
+  });
+
+  return tags;
 }
 
 function focusItem(id) {

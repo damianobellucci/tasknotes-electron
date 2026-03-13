@@ -42,6 +42,20 @@
             <input id="searchInput" type="search" placeholder="Find text..." />
           </label>
 
+          <label class="control">
+            <span>Tag</span>
+            <select id="tagFilterSelect">
+              <option value="all">All tags</option>
+            </select>
+          </label>
+
+          <label class="control search-control">
+            <span>New tag</span>
+            <input id="newTagInput" type="text" placeholder="work" />
+          </label>
+
+          <button id="addTagButton" class="ghost">Add Tag</button>
+
           <button id="exportButton" class="ghost">Export</button>
           <button id="importButton" class="ghost">Import</button>
           <button id="selectDataFileButton" class="ghost">Data File...</button>
@@ -49,6 +63,7 @@
         </div>
 
         <aside id="taskStats" class="task-stats"></aside>
+        <div id="globalTagsBar" class="global-tags-bar"></div>
       </header>
 
       <main class="content">

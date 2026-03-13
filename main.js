@@ -23,6 +23,7 @@ function defaultData() {
   return {
     tasks: [],
     notes: [],
+    tags: [],
     settings: {
       taskSort: 'manual',
       noteSort: 'manual'
@@ -38,6 +39,36 @@ function toIsoNow() {
 function asInt(value, fallback = 0) {
   const num = Number.parseInt(value, 10);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function normalizeTag(rawTag) {
+  return String(rawTag || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+}
+
+function sanitizeTagList(rawTags) {
+  if (!Array.isArray(rawTags)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const tags = [];
+
+  rawTags.forEach((tag) => {
+    const normalized = normalizeTag(tag);
+    if (!normalized) {
+      return;
+    }
+
+    const dedupeKey = normalized.toLocaleLowerCase();
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+
+    seen.add(dedupeKey);
+    tags.push(normalized);
+  });
+
+  return tags;
 }
 
 function sanitizeTask(task, index) {
@@ -57,6 +88,7 @@ function sanitizeTask(task, index) {
     editCount: Math.max(0, asInt(task?.editCount, 0)),
     manualOrder: asInt(task?.manualOrder, index),
     archived: Boolean(task?.archived),
+    tags: sanitizeTagList(task?.tags),
     isDeleted,
     deletedAt: isDeleted && typeof task?.deletedAt === 'string' ? task.deletedAt : null
   };
@@ -74,6 +106,7 @@ function sanitizeNote(note, index) {
     updatedAt: typeof note?.updatedAt === 'string' ? note.updatedAt : now,
     editCount: Math.max(0, asInt(note?.editCount, 0)),
     manualOrder: asInt(note?.manualOrder, index),
+    tags: sanitizeTagList(note?.tags),
     isDeleted,
     deletedAt: isDeleted && typeof note?.deletedAt === 'string' ? note.deletedAt : null
   };
@@ -83,6 +116,12 @@ function sanitizeData(rawData) {
   const base = defaultData();
   const tasks = Array.isArray(rawData?.tasks) ? rawData.tasks.map(sanitizeTask) : [];
   const notes = Array.isArray(rawData?.notes) ? rawData.notes.map(sanitizeNote) : [];
+  const storedTags = sanitizeTagList(rawData?.tags);
+  const usedTags = sanitizeTagList([
+    ...tasks.flatMap((task) => task.tags || []),
+    ...notes.flatMap((note) => note.tags || [])
+  ]);
+  const tags = sanitizeTagList([...storedTags, ...usedTags]);
 
   const settings = {
     taskSort: ['manual', 'created-desc', 'created-asc', 'priority-desc', 'priority-asc'].includes(rawData?.settings?.taskSort)
@@ -96,6 +135,7 @@ function sanitizeData(rawData) {
   return {
     tasks,
     notes,
+    tags,
     settings,
     version: APP_VERSION
   };
