@@ -18,6 +18,7 @@ const state = {
   pendingSave: false,
   deletedSnapshot: null,
   undoTimer: null,
+  toastTimer: null,
   dragItemId: null
 };
 
@@ -35,6 +36,7 @@ async function init() {
 function bindRefs() {
   refs.tabTasks = document.getElementById('tabTasks');
   refs.tabNotes = document.getElementById('tabNotes');
+  refs.tabTrash = document.getElementById('tabTrash');
   refs.newItemButton = document.getElementById('newItemButton');
   refs.sortSelect = document.getElementById('sortSelect');
   refs.taskFilterWrap = document.getElementById('taskFilterWrap');
@@ -54,6 +56,7 @@ function bindRefs() {
 function bindStaticEvents() {
   refs.tabTasks.addEventListener('click', () => switchView('tasks'));
   refs.tabNotes.addEventListener('click', () => switchView('notes'));
+  refs.tabTrash.addEventListener('click', () => switchView('trash'));
 
   refs.newItemButton.addEventListener('click', () => {
     if (state.view === 'tasks') {
@@ -123,8 +126,14 @@ function switchView(view) {
   state.view = view;
   refs.tabTasks.classList.toggle('active', view === 'tasks');
   refs.tabNotes.classList.toggle('active', view === 'notes');
+  refs.tabTrash.classList.toggle('active', view === 'trash');
   refs.tabTasks.setAttribute('aria-selected', String(view === 'tasks'));
   refs.tabNotes.setAttribute('aria-selected', String(view === 'notes'));
+  refs.tabTrash.setAttribute('aria-selected', String(view === 'trash'));
+
+  const isTrash = view === 'trash';
+  refs.newItemButton.style.display = isTrash ? 'none' : 'inline-flex';
+  refs.sortSelect.closest('.control').style.display = isTrash ? 'none' : 'flex';
   refs.newItemButton.textContent = view === 'tasks' ? '+ New Task' : '+ New Note';
   render();
 }
@@ -137,7 +146,12 @@ function render() {
 
 function renderSortControls() {
   const isTasks = state.view === 'tasks';
+  const isTrash = state.view === 'trash';
   refs.taskFilterWrap.style.display = isTasks ? 'flex' : 'none';
+
+  if (isTrash) {
+    return;
+  }
 
   const options = isTasks
     ? [
@@ -161,6 +175,16 @@ function renderSortControls() {
 }
 
 function renderStats() {
+  if (state.view === 'trash') {
+    const deletedCount = getVisibleTrashItems().length;
+    refs.taskStats.style.visibility = 'visible';
+    refs.taskStats.innerHTML = `
+      <div class="stats-title">Trash items: ${deletedCount}</div>
+      <div class="stats-grid"><div>Recoverable: ${deletedCount}</div></div>
+    `;
+    return;
+  }
+
   if (state.view !== 'tasks') {
     refs.taskStats.style.visibility = 'hidden';
     refs.taskStats.innerHTML = '';
@@ -168,7 +192,7 @@ function renderStats() {
   }
 
   refs.taskStats.style.visibility = 'visible';
-  const openTasks = state.tasks.filter((task) => !task.done);
+  const openTasks = state.tasks.filter((task) => !task.done && !task.isDeleted);
   const counts = Array.from({ length: 10 }, (_, i) => {
     const priority = i + 1;
     const count = openTasks.filter((task) => task.priority === priority).length;
@@ -186,7 +210,11 @@ function renderStats() {
 }
 
 function renderList() {
-  const items = state.view === 'tasks' ? getVisibleTasks() : getVisibleNotes();
+  const items = state.view === 'tasks'
+    ? getVisibleTasks()
+    : state.view === 'notes'
+      ? getVisibleNotes()
+      : getVisibleTrashItems();
 
   if (!items.length) {
     refs.listContainer.innerHTML = `
@@ -203,6 +231,10 @@ function renderList() {
 }
 
 function renderCard(item) {
+  if (state.view === 'trash') {
+    return renderTrashCard(item);
+  }
+
   const isTask = item.type === 'task';
   const canReorder = canManualReorder();
 
@@ -239,7 +271,27 @@ function renderCard(item) {
                </label>`
             : ''
         }
-        <button class="delete-btn" data-action="delete">Delete</button>
+        <button class="delete-btn" data-action="delete">Move to Trash</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderTrashCard(item) {
+  const kind = item.type === 'task' ? 'Task' : 'Note';
+  return `
+    <article class="card trash-card" data-id="${escapeHtml(item.id)}">
+      <div class="main-col">
+        <textarea class="text-input" readonly>${escapeHtml(item.text)}</textarea>
+        <div class="meta-row">
+          <span>Type: ${kind}</span>
+          <span>Deleted: ${formatDate(item.deletedAt)}</span>
+          <span>Created: ${formatDate(item.createdAt)}</span>
+        </div>
+      </div>
+
+      <div class="side-col">
+        <button class="restore-btn" data-action="restore">Restore</button>
       </div>
     </article>
   `;
@@ -247,6 +299,22 @@ function renderCard(item) {
 
 function bindDynamicEvents(items) {
   const itemMap = new Map(items.map((i) => [i.id, i]));
+
+  if (state.view === 'trash') {
+    refs.listContainer.querySelectorAll('.card').forEach((card) => {
+      const id = card.dataset.id;
+      const data = itemMap.get(id);
+      if (!data) {
+        return;
+      }
+
+      const restoreButton = card.querySelector('[data-action="restore"]');
+      restoreButton.addEventListener('click', () => restoreItem(data.type, id));
+    });
+    refs.listContainer.removeEventListener('dragover', listDragOverHandler);
+    refs.listContainer.removeEventListener('drop', listDropHandler);
+    return;
+  }
 
   refs.listContainer.querySelectorAll('.card').forEach((card) => {
     const id = card.dataset.id;
@@ -366,7 +434,9 @@ function createTask() {
     updatedAt: now,
     editCount: 0,
     manualOrder: nextHeadOrder(state.tasks),
-    archived: false
+    archived: false,
+    isDeleted: false,
+    deletedAt: null
   };
 
   state.tasks.unshift(task);
@@ -384,7 +454,9 @@ function createNote() {
     createdAt: now,
     updatedAt: now,
     editCount: 0,
-    manualOrder: nextHeadOrder(state.notes)
+    manualOrder: nextHeadOrder(state.notes),
+    isDeleted: false,
+    deletedAt: null
   };
 
   state.notes.unshift(note);
@@ -462,17 +534,23 @@ function updateTaskPriority(id, priorityValue) {
 
 function deleteItem(type, id) {
   const list = type === 'task' ? state.tasks : state.notes;
-  const index = list.findIndex((item) => item.id === id);
-  if (index < 0) {
+  const item = list.find((entry) => entry.id === id);
+  if (!item || item.isDeleted) {
     return;
   }
 
-  const [removed] = list.splice(index, 1);
-  state.deletedSnapshot = { type, index, item: removed };
-  resequenceManualOrder(list);
+  state.deletedSnapshot = {
+    type,
+    id,
+    prevIsDeleted: Boolean(item.isDeleted),
+    prevDeletedAt: item.deletedAt || null
+  };
+  item.isDeleted = true;
+  item.deletedAt = new Date().toISOString();
+  item.updatedAt = item.deletedAt;
   queueSave();
   render();
-  showToast(`${type === 'task' ? 'Task' : 'Note'} deleted`, true);
+  showToast(`${type === 'task' ? 'Task' : 'Note'} moved to Trash`, true);
 
   clearTimeout(state.undoTimer);
   state.undoTimer = setTimeout(() => {
@@ -486,16 +564,39 @@ function undoDelete() {
     return;
   }
 
-  const { type, index, item } = state.deletedSnapshot;
+  const { type, id, prevIsDeleted, prevDeletedAt } = state.deletedSnapshot;
   const list = type === 'task' ? state.tasks : state.notes;
-  const boundedIndex = Math.min(index, list.length);
-  list.splice(boundedIndex, 0, item);
-  resequenceManualOrder(list);
+  const item = list.find((entry) => entry.id === id);
+  if (!item) {
+    state.deletedSnapshot = null;
+    hideToast();
+    return;
+  }
+
+  item.isDeleted = prevIsDeleted;
+  item.deletedAt = prevDeletedAt;
+  item.updatedAt = new Date().toISOString();
   queueSave();
   render();
   state.deletedSnapshot = null;
   hideToast();
   setStatus('Delete undone');
+}
+
+function restoreItem(type, id) {
+  const list = type === 'task' ? state.tasks : state.notes;
+  const item = list.find((entry) => entry.id === id);
+  if (!item || !item.isDeleted) {
+    return;
+  }
+
+  item.isDeleted = false;
+  item.deletedAt = null;
+  item.updatedAt = new Date().toISOString();
+  queueSave();
+  render();
+  showToast(`${type === 'task' ? 'Task' : 'Note'} restored`, false);
+  setStatus('Item restored from Trash');
 }
 
 function reorderByDrop(view, movingId, targetId) {
@@ -602,7 +703,7 @@ async function onImportData() {
 
 function getVisibleTasks() {
   const sortMode = state.settings.taskSort;
-  let tasks = [...state.tasks];
+  let tasks = state.tasks.filter((task) => !task.isDeleted);
 
   if (state.taskFilter === 'open') {
     tasks = tasks.filter((task) => !task.done);
@@ -618,11 +719,19 @@ function getVisibleTasks() {
 }
 
 function getVisibleNotes() {
-  let notes = [...state.notes];
+  let notes = state.notes.filter((note) => !note.isDeleted);
   if (state.search) {
     notes = notes.filter((note) => note.text.toLowerCase().includes(state.search));
   }
   return sortItems(notes, state.settings.noteSort, false);
+}
+
+function getVisibleTrashItems() {
+  let deleted = [...state.tasks, ...state.notes].filter((item) => item.isDeleted);
+  if (state.search) {
+    deleted = deleted.filter((item) => item.text.toLowerCase().includes(state.search));
+  }
+  return deleted.sort((a, b) => new Date(b.deletedAt || 0) - new Date(a.deletedAt || 0));
 }
 
 function sortItems(items, sortMode, supportsPriority) {
@@ -707,10 +816,17 @@ function onGlobalKeyDown(event) {
 }
 
 function showToast(message, showUndo) {
+  clearTimeout(state.toastTimer);
   refs.toastMessage.textContent = message;
   refs.toastUndo.style.display = showUndo ? 'inline-flex' : 'none';
   refs.toast.classList.add('visible');
   refs.toast.setAttribute('aria-hidden', 'false');
+
+  if (!showUndo) {
+    state.toastTimer = setTimeout(() => {
+      hideToast();
+    }, 2200);
+  }
 }
 
 function hideToast() {

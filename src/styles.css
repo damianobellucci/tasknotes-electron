@@ -298,6 +298,21 @@ button.ghost {
   background: #ffecec;
 }
 
+.trash-card .text-input {
+  background: #f9fafb;
+  border-color: #e1e7ee;
+}
+
+.restore-btn {
+  border-color: #b8dbcb;
+  color: var(--success);
+  background: #f4fbf7;
+}
+
+.restore-btn:hover {
+  background: #e9f8f0;
+}
+
 .empty-state {
   margin: 30px auto;
   text-align: center;

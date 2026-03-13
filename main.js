@@ -32,6 +32,7 @@ function sanitizeTask(task, index) {
   const now = toIsoNow();
   const priorityRaw = asInt(task?.priority, 5);
   const priority = Math.min(10, Math.max(1, priorityRaw));
+  const isDeleted = Boolean(task?.isDeleted);
 
   return {
     id: typeof task?.id === 'string' && task.id.trim() ? task.id : `task-${Date.now()}-${index}`,
@@ -43,12 +44,15 @@ function sanitizeTask(task, index) {
     updatedAt: typeof task?.updatedAt === 'string' ? task.updatedAt : now,
     editCount: Math.max(0, asInt(task?.editCount, 0)),
     manualOrder: asInt(task?.manualOrder, index),
-    archived: Boolean(task?.archived)
+    archived: Boolean(task?.archived),
+    isDeleted,
+    deletedAt: isDeleted && typeof task?.deletedAt === 'string' ? task.deletedAt : null
   };
 }
 
 function sanitizeNote(note, index) {
   const now = toIsoNow();
+  const isDeleted = Boolean(note?.isDeleted);
 
   return {
     id: typeof note?.id === 'string' && note.id.trim() ? note.id : `note-${Date.now()}-${index}`,
@@ -57,7 +61,9 @@ function sanitizeNote(note, index) {
     createdAt: typeof note?.createdAt === 'string' ? note.createdAt : now,
     updatedAt: typeof note?.updatedAt === 'string' ? note.updatedAt : now,
     editCount: Math.max(0, asInt(note?.editCount, 0)),
-    manualOrder: asInt(note?.manualOrder, index)
+    manualOrder: asInt(note?.manualOrder, index),
+    isDeleted,
+    deletedAt: isDeleted && typeof note?.deletedAt === 'string' ? note.deletedAt : null
   };
 }
 
