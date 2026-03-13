@@ -1106,37 +1106,24 @@ function renderGlobalTagsBar() {
   const chips = state.tags
     .map((tag) => {
       const usageCount = getTagUsageCount(tag);
+      const activeClass = state.tagFilter === tag ? 'active' : '';
       const unavailableClass = usageCount === 0 ? 'unavailable' : '';
       const disabledAttr = usageCount === 0 ? 'disabled aria-disabled="true"' : '';
       const title = usageCount === 0
         ? 'Nessuna card/nota collegata'
-        : `Filtra per "${tag}"`;
+        : state.tagFilter === tag
+          ? `Rimuovi filtro "${tag}"`
+          : `Filtra per "${tag}"`;
 
       return `
-        <span class="tag-pill ${unavailableClass}">
+        <span class="tag-pill ${activeClass} ${unavailableClass}">
           <button data-action="filter-tag" data-tag="${escapeHtml(tag)}" title="${escapeHtml(title)}" ${disabledAttr}>${escapeHtml(tag)}</button>
         </span>
       `;
     })
     .join('');
 
-  const activeChip = state.tagFilter !== 'all'
-    ? `<span class="tag-pill active tag-active-chip">
-        <strong>${escapeHtml(state.tagFilter)}</strong>
-        <button data-action="clear-tag-filter" title="Rimuovi filtro">×</button>
-       </span>`
-    : '';
-
-  refs.globalTagsBar.innerHTML = activeChip + chips;
-
-  const clearBtn = refs.globalTagsBar.querySelector('[data-action="clear-tag-filter"]');
-  if (clearBtn) {
-    clearBtn.addEventListener('click', () => {
-      state.tagFilter = 'all';
-      refs.tagFilterSelect.value = 'all';
-      render();
-    });
-  }
+  refs.globalTagsBar.innerHTML = chips;
 
   refs.globalTagsBar.querySelectorAll('[data-action="filter-tag"]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1144,7 +1131,7 @@ function renderGlobalTagsBar() {
         return;
       }
 
-      state.tagFilter = button.dataset.tag;
+      state.tagFilter = state.tagFilter === button.dataset.tag ? 'all' : button.dataset.tag;
       render();
     });
 
