@@ -1,0 +1,21 @@
+{
+  "name": "tasknotes-electron",
+  "version": "1.0.0",
+  "description": "Fast local task and notes manager with Electron and JSON file persistence",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "tasks",
+    "notes",
+    "json"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^37.3.1"
+  }
+}

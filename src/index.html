@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TaskNotes</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <h1>TaskNotes</h1>
+          <p class="subtitle">Fast local tasks and notes</p>
+        </div>
+
+        <div class="tab-switch" role="tablist" aria-label="Sections">
+          <button id="tabTasks" class="tab active" role="tab" aria-selected="true">Tasks</button>
+          <button id="tabNotes" class="tab" role="tab" aria-selected="false">Notes</button>
+        </div>
+
+        <div class="header-controls">
+          <button id="newItemButton" class="primary">+ New Task</button>
+
+          <label class="control">
+            <span>Sort</span>
+            <select id="sortSelect"></select>
+          </label>
+
+          <label id="taskFilterWrap" class="control">
+            <span>Show</span>
+            <select id="taskFilterSelect">
+              <option value="all">All</option>
+              <option value="open">Open</option>
+              <option value="done">Done</option>
+            </select>
+          </label>
+
+          <label class="control search-control">
+            <span>Search</span>
+            <input id="searchInput" type="search" placeholder="Find text..." />
+          </label>
+
+          <button id="exportButton" class="ghost">Export</button>
+          <button id="importButton" class="ghost">Import</button>
+        </div>
+
+        <aside id="taskStats" class="task-stats"></aside>
+      </header>
+
+      <main class="content">
+        <section id="listContainer" class="list" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" aria-live="assertive" aria-hidden="true">
+      <span id="toastMessage"></span>
+      <button id="toastUndo" class="ghost">Undo</button>
+    </div>
+
+    <footer class="statusbar">
+      <span id="statusText">Ready</span>
+      <span id="dataPathText"></span>
+    </footer>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

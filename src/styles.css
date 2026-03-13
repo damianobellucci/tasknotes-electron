@@ -1,0 +1,357 @@
+:root {
+  --bg-main: #f3f5f7;
+  --bg-panel: #ffffff;
+  --bg-hover: #f8f9fb;
+  --border: #d7dde3;
+  --text-main: #1f2a37;
+  --text-muted: #5c6978;
+  --accent: #165d89;
+  --accent-soft: #d9ebf5;
+  --danger: #af2f2f;
+  --success: #2d7c50;
+  --shadow-soft: 0 10px 24px rgba(12, 24, 36, 0.06);
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: "Aptos", "Segoe UI", "SF Pro Text", "Helvetica Neue", sans-serif;
+  color: var(--text-main);
+  background:
+    radial-gradient(circle at 5% 0%, #eaf1f6 0%, transparent 45%),
+    radial-gradient(circle at 95% 100%, #edf3ef 0%, transparent 40%),
+    var(--bg-main);
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+.topbar {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(160px, 220px) auto 1fr auto;
+  align-items: center;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(6px);
+}
+
+.brand-block h1 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.subtitle {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.tab-switch {
+  display: inline-flex;
+  gap: 6px;
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.tab {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: var(--bg-panel);
+  color: var(--text-main);
+  box-shadow: var(--shadow-soft);
+}
+
+.header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+button {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 11px;
+  background: var(--bg-panel);
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--bg-hover);
+}
+
+button.primary {
+  border-color: #1f6f9e;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:hover {
+  filter: brightness(1.03);
+}
+
+button.ghost {
+  padding: 6px 10px;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.control select,
+.control input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-main);
+  padding: 6px 8px;
+  min-height: 34px;
+}
+
+.search-control input {
+  width: 180px;
+}
+
+.task-stats {
+  min-width: 220px;
+  justify-self: end;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  box-shadow: var(--shadow-soft);
+}
+
+.stats-title {
+  font-weight: 700;
+  margin-bottom: 7px;
+  color: var(--text-main);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(30px, 1fr));
+  gap: 4px;
+}
+
+.content {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.list {
+  height: 100%;
+  overflow: auto;
+  padding: 14px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-soft);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.card:hover {
+  border-color: #bcc8d3;
+}
+
+.card.dragging {
+  opacity: 0.6;
+}
+
+.card.done {
+  opacity: 0.72;
+}
+
+.card.done .text-input {
+  text-decoration: line-through;
+}
+
+.drag-handle {
+  user-select: none;
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 6px;
+  border-radius: 7px;
+  cursor: grab;
+}
+
+.drag-handle:hover {
+  background: var(--bg-main);
+}
+
+.drag-handle.disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.main-col {
+  display: grid;
+  gap: 8px;
+}
+
+.text-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px;
+  line-height: 1.45;
+  background: #fff;
+  color: var(--text-main);
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: #8db7d1;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.meta-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  flex-wrap: wrap;
+}
+
+.side-col {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  min-width: 112px;
+}
+
+.priority-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.priority-control select {
+  width: 56px;
+}
+
+.delete-btn {
+  border-color: #e4bec0;
+  color: var(--danger);
+  background: #fff7f7;
+}
+
+.delete-btn:hover {
+  background: #ffecec;
+}
+
+.empty-state {
+  margin: 30px auto;
+  text-align: center;
+  color: var(--text-muted);
+  max-width: 420px;
+}
+
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 54px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-soft);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: all 160ms ease;
+}
+
+.toast.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.statusbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+@media (max-width: 1050px) {
+  .topbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .task-stats {
+    justify-self: stretch;
+    min-width: 0;
+  }
+
+  .search-control input {
+    width: 100%;
+  }
+}
