@@ -44,6 +44,8 @@
 
           <button id="exportButton" class="ghost">Export</button>
           <button id="importButton" class="ghost">Import</button>
+          <button id="selectDataFileButton" class="ghost">Data File...</button>
+          <button id="defaultDataFileButton" class="ghost">Use Default Data</button>
         </div>
 
         <aside id="taskStats" class="task-stats"></aside>
@@ -59,8 +61,26 @@
       <button id="toastUndo" class="ghost">Undo</button>
     </div>
 
+    <div id="dataPickerModal" class="modal" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="dataPickerTitle">
+        <h2 id="dataPickerTitle">Choose Data File</h2>
+        <p class="modal-subtitle">Select a data file or create a new one (extension is managed automatically).</p>
+        <div id="dataPickerList" class="data-picker-list"></div>
+        <div class="modal-row">
+          <input id="newDataFileInput" type="text" placeholder="new-file-name" />
+          <button id="createDataFileButton" class="primary">Create</button>
+        </div>
+        <div class="modal-actions">
+          <button id="closeDataPickerButton" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+
     <footer class="statusbar">
-      <span id="statusText">Ready</span>
+      <span class="status-left">
+        <span id="statusText">Ready</span>
+        <span id="activeDataHint" class="active-data-hint"></span>
+      </span>
       <span id="dataPathText"></span>
     </footer>
 

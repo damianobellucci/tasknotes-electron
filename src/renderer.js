@@ -13,6 +13,10 @@ const state = {
   taskFilter: 'all',
   search: '',
   dataFilePath: '',
+  defaultDataFilePath: '',
+  activeDataFileDisplayName: '',
+  isDefaultDataFile: false,
+  dataFileCandidates: [],
   saveTimer: null,
   saveInFlight: false,
   pendingSave: false,
@@ -44,6 +48,9 @@ function bindRefs() {
   refs.searchInput = document.getElementById('searchInput');
   refs.exportButton = document.getElementById('exportButton');
   refs.importButton = document.getElementById('importButton');
+  refs.selectDataFileButton = document.getElementById('selectDataFileButton');
+  refs.defaultDataFileButton = document.getElementById('defaultDataFileButton');
+  refs.activeDataHint = document.getElementById('activeDataHint');
   refs.taskStats = document.getElementById('taskStats');
   refs.listContainer = document.getElementById('listContainer');
   refs.statusText = document.getElementById('statusText');
@@ -51,6 +58,11 @@ function bindRefs() {
   refs.toast = document.getElementById('toast');
   refs.toastMessage = document.getElementById('toastMessage');
   refs.toastUndo = document.getElementById('toastUndo');
+  refs.dataPickerModal = document.getElementById('dataPickerModal');
+  refs.dataPickerList = document.getElementById('dataPickerList');
+  refs.newDataFileInput = document.getElementById('newDataFileInput');
+  refs.createDataFileButton = document.getElementById('createDataFileButton');
+  refs.closeDataPickerButton = document.getElementById('closeDataPickerButton');
 }
 
 function bindStaticEvents() {
@@ -88,6 +100,10 @@ function bindStaticEvents() {
 
   refs.exportButton.addEventListener('click', onExportData);
   refs.importButton.addEventListener('click', onImportData);
+  refs.selectDataFileButton.addEventListener('click', onSelectDataFile);
+  refs.defaultDataFileButton.addEventListener('click', onUseDefaultDataFile);
+  refs.createDataFileButton.addEventListener('click', onCreateDataFile);
+  refs.closeDataPickerButton.addEventListener('click', closeDataPicker);
 
   refs.toastUndo.addEventListener('click', undoDelete);
 
@@ -101,21 +117,12 @@ async function loadInitialData() {
       throw new Error('Data load failed');
     }
 
-    state.tasks = Array.isArray(result.data.tasks) ? result.data.tasks : [];
-    state.notes = Array.isArray(result.data.notes) ? result.data.notes : [];
-    state.settings = {
-      ...state.settings,
-      ...result.data.settings
-    };
-    state.version = result.data.version || 1;
-    state.dataFilePath = result.dataFilePath || '';
+    applyLoadedData(result.data);
+    applyDataSourceInfo(result);
 
     const appInfo = await window.electronAPI.getAppInfo();
-    if (appInfo?.dataFilePath) {
-      state.dataFilePath = appInfo.dataFilePath;
-    }
-
-    refs.dataPathText.textContent = state.dataFilePath ? `Data: ${state.dataFilePath}` : '';
+    applyDataSourceInfo(appInfo || {});
+    refreshDataSourceUI();
     setStatus('Data loaded');
   } catch (error) {
     setStatus(`Load fallback: ${error.message}`);
@@ -686,12 +693,7 @@ async function onImportData() {
       return;
     }
 
-    state.tasks = result.data.tasks || [];
-    state.notes = result.data.notes || [];
-    state.settings = {
-      ...state.settings,
-      ...result.data.settings
-    };
+    applyLoadedData(result.data);
 
     render();
     queueSave();
@@ -699,6 +701,190 @@ async function onImportData() {
   } catch (error) {
     setStatus(`Import error: ${error.message}`);
   }
+}
+
+async function onSelectDataFile() {
+  try {
+    await flushPendingSave();
+    const result = await window.electronAPI.selectDataFile();
+
+    if (!result?.ok) {
+      setStatus('Unable to load data file list');
+      return;
+    }
+
+    state.dataFileCandidates = Array.isArray(result.candidates) ? result.candidates : [];
+    renderDataPickerList();
+    openDataPicker();
+    setStatus('Choose a data file from app list');
+  } catch (error) {
+    setStatus(`Switch error: ${error.message}`);
+  }
+}
+
+async function onActivateDataFile(fileName) {
+  try {
+    await flushPendingSave();
+    const result = await window.electronAPI.activateDataFile(fileName);
+
+    if (!result?.ok || !result?.data) {
+      setStatus(result?.error || 'Unable to switch data file');
+      return;
+    }
+
+    applyLoadedData(result.data);
+    applyDataSourceInfo(result);
+    state.dataFileCandidates = Array.isArray(result.candidates) ? result.candidates : state.dataFileCandidates;
+    refreshDataSourceUI();
+    render();
+    closeDataPicker();
+    setStatus('Data source changed');
+    showToast('Now using selected data file', false);
+  } catch (error) {
+    setStatus(`Activation error: ${error.message}`);
+  }
+}
+
+async function onCreateDataFile() {
+  const name = refs.newDataFileInput.value.trim().replace(/\.json$/i, '');
+  if (!name) {
+    setStatus('Type a new data file name first');
+    return;
+  }
+
+  try {
+    await flushPendingSave();
+    const result = await window.electronAPI.createDataFile(name);
+    if (!result?.ok || !result?.data) {
+      setStatus(result?.error || 'Unable to create data file');
+      return;
+    }
+
+    applyLoadedData(result.data);
+    applyDataSourceInfo(result);
+    state.dataFileCandidates = Array.isArray(result.candidates) ? result.candidates : state.dataFileCandidates;
+    refreshDataSourceUI();
+    refs.newDataFileInput.value = '';
+    render();
+    closeDataPicker();
+    showToast('New data file created and selected', false);
+    setStatus('Data file created');
+  } catch (error) {
+    setStatus(`Create file error: ${error.message}`);
+  }
+}
+
+function renderDataPickerList() {
+  if (!state.dataFileCandidates.length) {
+    refs.dataPickerList.innerHTML = '<p class="modal-subtitle">No data JSON files found yet.</p>';
+    return;
+  }
+
+  refs.dataPickerList.innerHTML = state.dataFileCandidates
+    .map((item) => {
+      const displayName = (item.displayName || item.name || '').replace(/\.json$/i, '');
+      const tags = [item.isCurrent ? 'Current' : '', item.isDefault ? 'Default' : ''].filter(Boolean).join(' • ');
+      return `
+        <div class="data-picker-item">
+          <div>
+            <strong>${escapeHtml(displayName)}</strong>
+            <div class="data-picker-meta">${escapeHtml(tags || 'TaskNotes data file')}</div>
+          </div>
+          <button class="ghost" data-action="pick-data-file" data-file-name="${escapeHtml(item.name)}">Use</button>
+        </div>
+      `;
+    })
+    .join('');
+
+  refs.dataPickerList.querySelectorAll('[data-action="pick-data-file"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      onActivateDataFile(button.dataset.fileName);
+    });
+  });
+}
+
+function openDataPicker() {
+  refs.dataPickerModal.classList.add('visible');
+  refs.dataPickerModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeDataPicker() {
+  refs.dataPickerModal.classList.remove('visible');
+  refs.dataPickerModal.setAttribute('aria-hidden', 'true');
+}
+
+async function onUseDefaultDataFile() {
+  try {
+    await flushPendingSave();
+    const result = await window.electronAPI.useDefaultDataFile();
+    if (!result?.ok || !result?.data) {
+      setStatus('Unable to switch to default data file');
+      return;
+    }
+
+    applyLoadedData(result.data);
+    applyDataSourceInfo(result);
+    refreshDataSourceUI();
+    render();
+    setStatus('Using default data file');
+    showToast('Switched to default data file', false);
+  } catch (error) {
+    setStatus(`Default switch error: ${error.message}`);
+  }
+}
+
+async function flushPendingSave() {
+  clearTimeout(state.saveTimer);
+
+  if (!state.saveInFlight) {
+    await saveNow();
+  }
+
+  await waitForSaveIdle();
+
+  if (state.pendingSave) {
+    state.pendingSave = false;
+    await saveNow();
+    await waitForSaveIdle();
+  }
+}
+
+async function waitForSaveIdle() {
+  while (state.saveInFlight) {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+}
+
+function applyLoadedData(data) {
+  state.tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+  state.notes = Array.isArray(data?.notes) ? data.notes : [];
+  state.settings = {
+    ...state.settings,
+    ...data?.settings
+  };
+  state.version = data?.version || state.version;
+}
+
+function applyDataSourceInfo(info) {
+  if (!info || typeof info !== 'object') {
+    return;
+  }
+
+  state.dataFilePath = info.dataFilePath || state.dataFilePath;
+  state.defaultDataFilePath = info.defaultDataFilePath || state.defaultDataFilePath;
+  state.activeDataFileDisplayName = info.activeDataFileDisplayName || state.activeDataFileDisplayName;
+  if (typeof info.isDefaultDataFile === 'boolean') {
+    state.isDefaultDataFile = info.isDefaultDataFile;
+  }
+}
+
+function refreshDataSourceUI() {
+  refs.dataPathText.textContent = state.dataFilePath ? `Data: ${state.dataFilePath}` : '';
+
+  const label = state.activeDataFileDisplayName || (state.dataFilePath ? state.dataFilePath.split('/').pop().replace(/\.json$/i, '') : 'Unknown');
+  const mode = state.isDefaultDataFile ? 'Default' : 'Custom';
+  refs.activeDataHint.textContent = `Source: ${label} (${mode})`;
+  refs.activeDataHint.title = state.dataFilePath || 'Current data source';
 }
 
 function getVisibleTasks() {

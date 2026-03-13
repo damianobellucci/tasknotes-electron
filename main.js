@@ -3,9 +3,21 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const DATA_FILE_NAME = 'task-manager-data.json';
+const DATA_SOURCE_FILE_NAME = 'tasknotes-data-source.json';
 const APP_VERSION = 1;
 
 let dataFilePath = '';
+let defaultDataFilePath = '';
+let dataSourceConfigPath = '';
+let userDataPath = '';
+
+function getDefaultDataSourceConfig() {
+  return {
+    dataFilePath: '',
+    labels: {},
+    updatedAt: toIsoNow()
+  };
+}
 
 function defaultData() {
   return {
@@ -111,17 +123,184 @@ async function writeJsonAtomic(filePath, data) {
   await fs.rename(tmpPath, filePath);
 }
 
+async function ensureJsonDataFile(filePath) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+
+  try {
+    await fs.access(filePath);
+  } catch {
+    await writeJsonAtomic(filePath, defaultData());
+  }
+}
+
+async function readSelectedDataFilePath() {
+  const config = await readDataSourceConfig();
+  if (typeof config.dataFilePath === 'string' && config.dataFilePath.trim()) {
+    return path.resolve(config.dataFilePath);
+  }
+
+  return defaultDataFilePath;
+}
+
+async function readDataSourceConfig() {
+  try {
+    const raw = await fs.readFile(dataSourceConfigPath, 'utf8');
+    const parsed = JSON.parse(raw);
+
+    return {
+      dataFilePath: typeof parsed?.dataFilePath === 'string' ? parsed.dataFilePath : '',
+      labels: parsed?.labels && typeof parsed.labels === 'object' ? parsed.labels : {},
+      updatedAt: typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : toIsoNow()
+    };
+  } catch {
+    return getDefaultDataSourceConfig();
+  }
+}
+
+async function saveSelectedDataFilePath(filePath) {
+  const config = await readDataSourceConfig();
+  await writeJsonAtomic(dataSourceConfigPath, {
+    dataFilePath: path.resolve(filePath),
+    labels: config.labels || {},
+    updatedAt: toIsoNow()
+  });
+}
+
+async function saveDataSourceConfig(configPatch) {
+  const current = await readDataSourceConfig();
+  const next = {
+    ...current,
+    ...configPatch,
+    labels: {
+      ...(current.labels || {}),
+      ...(configPatch?.labels || {})
+    },
+    updatedAt: toIsoNow()
+  };
+
+  await writeJsonAtomic(dataSourceConfigPath, next);
+}
+
+async function setActiveDataFile(filePath, persistSelection = true) {
+  dataFilePath = path.resolve(filePath);
+  await ensureJsonDataFile(dataFilePath);
+  if (persistSelection) {
+    await saveSelectedDataFilePath(dataFilePath);
+  }
+}
+
 async function ensureDataFile() {
-  const userDataPath = app.getPath('userData');
-  dataFilePath = path.join(userDataPath, DATA_FILE_NAME);
+  userDataPath = app.getPath('userData');
+  defaultDataFilePath = path.join(userDataPath, DATA_FILE_NAME);
+  dataSourceConfigPath = path.join(userDataPath, DATA_SOURCE_FILE_NAME);
 
   await fs.mkdir(userDataPath, { recursive: true });
 
-  try {
-    await fs.access(dataFilePath);
-  } catch {
-    await writeJsonAtomic(dataFilePath, defaultData());
+  if (!dataFilePath) {
+    const selectedPath = await readSelectedDataFilePath();
+    await setActiveDataFile(selectedPath, false);
   }
+}
+
+function isAllowedDataJsonName(fileName) {
+  if (typeof fileName !== 'string') {
+    return false;
+  }
+
+  if (!fileName.endsWith('.json')) {
+    return false;
+  }
+
+  if (fileName.includes(path.sep) || fileName.includes('..')) {
+    return false;
+  }
+
+  if (fileName === DATA_SOURCE_FILE_NAME) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeUserDataFileName(rawName) {
+  const base = String(rawName || '')
+    .trim()
+    .replace(/\.json$/i, '')
+    .replace(/-/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_');
+
+  return base ? `${base}.json` : '';
+}
+
+function normalizeUserDataFileLabel(rawName) {
+  const base = String(rawName || '').trim().replace(/\.json$/i, '');
+  return base;
+}
+
+async function listDataFileCandidates() {
+  await ensureDataFile();
+  const config = await readDataSourceConfig();
+  const labels = config.labels || {};
+  const entries = await fs.readdir(userDataPath, { withFileTypes: true });
+
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => isAllowedDataJsonName(name))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  return files.map((name) => {
+    const filePath = path.join(userDataPath, name);
+    const displayName = typeof labels[name] === 'string' && labels[name].trim()
+      ? labels[name].trim()
+      : name.replace(/\.json$/i, '');
+
+    return {
+      name,
+      displayName,
+      path: filePath,
+      isCurrent: path.resolve(filePath) === path.resolve(dataFilePath),
+      isDefault: path.resolve(filePath) === path.resolve(defaultDataFilePath)
+    };
+  });
+}
+
+async function createDataFileCandidate(rawName) {
+  await ensureDataFile();
+  const fileName = normalizeUserDataFileName(rawName);
+  const displayName = normalizeUserDataFileLabel(rawName);
+
+  if (!isAllowedDataJsonName(fileName)) {
+    throw new Error('Invalid file name. Use a .json name without path separators.');
+  }
+
+  if (!displayName) {
+    throw new Error('Invalid file name. Please type a visible label.');
+  }
+
+  const targetPath = path.join(userDataPath, fileName);
+  await ensureJsonDataFile(targetPath);
+  await setActiveDataFile(targetPath, true);
+  await saveDataSourceConfig({ labels: { [fileName]: displayName } });
+  const data = await loadData();
+  return {
+    ok: true,
+    data,
+    dataFilePath,
+    defaultDataFilePath,
+    ...(await getActiveDataSourceMeta()),
+    candidates: await listDataFileCandidates()
+  };
+}
+
+async function getActiveDataSourceMeta() {
+  const candidates = await listDataFileCandidates();
+  const current = candidates.find((item) => item.isCurrent);
+  return {
+    activeDataFileDisplayName: current?.displayName || path.basename(dataFilePath, '.json'),
+    isDefaultDataFile: path.resolve(dataFilePath) === path.resolve(defaultDataFilePath)
+  };
 }
 
 async function loadData() {
@@ -179,7 +358,9 @@ ipcMain.handle('data:load', async () => {
   return {
     ok: true,
     data,
-    dataFilePath
+    dataFilePath,
+    defaultDataFilePath,
+    ...(await getActiveDataSourceMeta())
   };
 });
 
@@ -191,9 +372,63 @@ ipcMain.handle('app:info', async () => {
   await ensureDataFile();
   return {
     dataFilePath,
+    defaultDataFilePath,
+    ...(await getActiveDataSourceMeta()),
     userDataPath: app.getPath('userData'),
     platform: process.platform,
     appVersion: app.getVersion()
+  };
+});
+
+ipcMain.handle('data:select-file', async () => {
+  const candidates = await listDataFileCandidates();
+  return {
+    ok: true,
+    candidates,
+    dataFilePath,
+    defaultDataFilePath,
+    ...(await getActiveDataSourceMeta())
+  };
+});
+
+ipcMain.handle('data:activate-file', async (_event, fileName) => {
+  await ensureDataFile();
+  const safeName = String(fileName || '').trim();
+  if (!isAllowedDataJsonName(safeName)) {
+    return { ok: false, error: 'Invalid file name' };
+  }
+
+  const nextPath = path.join(userDataPath, safeName);
+  await setActiveDataFile(nextPath, true);
+  const data = await loadData();
+  return {
+    ok: true,
+    data,
+    dataFilePath,
+    defaultDataFilePath,
+    ...(await getActiveDataSourceMeta()),
+    candidates: await listDataFileCandidates()
+  };
+});
+
+ipcMain.handle('data:create-file', async (_event, fileName) => {
+  try {
+    return await createDataFileCandidate(fileName);
+  } catch (error) {
+    return { ok: false, error: error.message || 'Unable to create data file' };
+  }
+});
+
+ipcMain.handle('data:use-default-file', async () => {
+  await ensureDataFile();
+  await setActiveDataFile(defaultDataFilePath, true);
+  const data = await loadData();
+  return {
+    ok: true,
+    data,
+    dataFilePath,
+    defaultDataFilePath,
+    ...(await getActiveDataSourceMeta())
   };
 });
 
