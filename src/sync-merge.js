@@ -1,4 +1,16 @@
-(function attachSyncMerge(global) {
+(function attachSyncMerge(globalFactory) {
+  const api = createSyncMerge();
+  const global = globalFactory();
+
+  if (global) {
+    global.TaskNotesSyncMerge = api;
+  }
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  }
+
+  function createSyncMerge() {
   const DEFAULT_SNAPSHOT = {
     tasks: [],
     notes: [],
@@ -173,9 +185,12 @@
     return `${String(prefix || 'item')}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
-  global.TaskNotesSyncMerge = {
-    cloneSnapshot,
-    hasUnsyncedLocalChanges,
-    mergeSnapshots
-  };
-}(window));
+    return {
+      cloneSnapshot,
+      hasUnsyncedLocalChanges,
+      mergeSnapshots
+    };
+  }
+}(function getGlobal() {
+  return typeof globalThis !== 'undefined' ? globalThis : null;
+}));

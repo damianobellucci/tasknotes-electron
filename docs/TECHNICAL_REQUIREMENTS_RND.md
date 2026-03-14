@@ -298,9 +298,10 @@ Release candidate is blocked if any of these fail:
 - startup local persistence integrity
 
 ### 17.5 Current testing status
-- Syntax-level checks are currently used as a lightweight guardrail during refactoring.
-- Manual smoke tests are required after each structural extraction.
-- A dedicated automated test framework is not yet installed and remains a recommended next step.
+- Syntax-level checks are used as a lightweight guardrail during refactoring.
+- An initial Vitest suite is installed and active for extracted utility and service modules.
+- Manual smoke tests are still required after each structural extraction.
+- CI now includes a dedicated automated test workflow on `main` pushes and pull requests.
 
 ## 18. Build and Release Requirements
 ### TR-38 Versioning
@@ -326,7 +327,7 @@ Build scripts should clear stale artifacts before packaging.
 - Evaluate encrypted fallback strategy where safe storage is unavailable
 - Add optional telemetry for reliability metrics and bottleneck analysis
 - Continue reducing renderer and main orchestration size through targeted extractions only when boundaries are clear.
-- Introduce unit tests around extracted modules before further major architectural changes.
+- Extend the current Vitest suite to cover auth/session modules and controller orchestration before further major architectural changes.
 
 ## 21. Acceptance Criteria Summary
 A release is technically acceptable only if:

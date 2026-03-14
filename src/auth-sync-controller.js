@@ -1,4 +1,12 @@
-(function attachAuthSyncController(global) {
+(function attachAuthSyncController(root, factory) {
+  const api = factory(root);
+  if (root) {
+    root.TaskNotesAuthSyncController = api;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  }
+}(typeof window !== 'undefined' ? window : globalThis, function authSyncControllerFactory(global) {
   function create(deps) {
     const {
       state,
@@ -401,5 +409,5 @@
     };
   }
 
-  global.TaskNotesAuthSyncController = { create };
-}(window));
+  return { create };
+}));

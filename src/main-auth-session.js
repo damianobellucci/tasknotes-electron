@@ -9,9 +9,16 @@ function createAuthSessionManager({
   writeJsonAtomic,
   authSessionFileName,
   cognitoRegion,
-  cognitoClientId
+  cognitoClientId,
+  createCognitoClient,
+  createInitiateAuthCommand,
+  createRespondToAuthChallengeCommand
 }) {
   let cognitoTokens = null;
+
+  const makeCognitoClient = createCognitoClient || ((options) => new CognitoIdentityProviderClient(options));
+  const makeInitiateAuthCommand = createInitiateAuthCommand || ((input) => new InitiateAuthCommand(input));
+  const makeRespondToAuthChallengeCommand = createRespondToAuthChallengeCommand || ((input) => new RespondToAuthChallengeCommand(input));
 
   function isCognitoConfigured() {
     return Boolean(cognitoRegion && cognitoClientId);
@@ -117,8 +124,8 @@ function createAuthSessionManager({
   async function refreshCognitoToken() {
     if (!cognitoTokens?.refreshToken) return false;
     try {
-      const client = new CognitoIdentityProviderClient({ region: cognitoRegion });
-      const cmd = new InitiateAuthCommand({
+      const client = makeCognitoClient({ region: cognitoRegion });
+      const cmd = makeInitiateAuthCommand({
         AuthFlow: 'REFRESH_TOKEN_AUTH',
         ClientId: cognitoClientId,
         AuthParameters: { REFRESH_TOKEN: cognitoTokens.refreshToken }
@@ -187,8 +194,8 @@ function createAuthSessionManager({
       return { ok: false, error: 'Cognito is not configured' };
     }
     try {
-      const client = new CognitoIdentityProviderClient({ region: cognitoRegion });
-      const cmd = new InitiateAuthCommand({
+      const client = makeCognitoClient({ region: cognitoRegion });
+      const cmd = makeInitiateAuthCommand({
         AuthFlow: 'USER_PASSWORD_AUTH',
         ClientId: cognitoClientId,
         AuthParameters: { USERNAME: email, PASSWORD: password }
@@ -223,8 +230,8 @@ function createAuthSessionManager({
   async function completeNewPassword(email, newPassword, session) {
     if (!isCognitoConfigured()) return { ok: false, error: 'Cognito non configurato' };
     try {
-      const client = new CognitoIdentityProviderClient({ region: cognitoRegion });
-      const cmd = new RespondToAuthChallengeCommand({
+      const client = makeCognitoClient({ region: cognitoRegion });
+      const cmd = makeRespondToAuthChallengeCommand({
         ChallengeName: 'NEW_PASSWORD_REQUIRED',
         ClientId: cognitoClientId,
         Session: session,

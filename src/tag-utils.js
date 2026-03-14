@@ -1,4 +1,16 @@
-(function attachTagUtils(global) {
+(function attachTagUtils(globalFactory) {
+  const api = createTagUtils();
+  const global = globalFactory();
+
+  if (global) {
+    global.TaskNotesTagUtils = api;
+  }
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  }
+
+  function createTagUtils() {
   function normalizeTag(value) {
     return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
   }
@@ -29,8 +41,11 @@
     return tags;
   }
 
-  global.TaskNotesTagUtils = {
+    return {
     normalizeTag,
     sanitizeTagList
-  };
-}(window));
+    };
+  }
+}(function getGlobal() {
+  return typeof globalThis !== 'undefined' ? globalThis : null;
+}));

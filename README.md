@@ -38,6 +38,25 @@ TaskNotes is a fast local desktop app for managing work tasks and notes with aut
 - Technical requirements: `docs/TECHNICAL_REQUIREMENTS_RND.md`
 - Release history: `CHANGELOG.md`
 
+## Automated Tests
+
+The project now includes an initial automated test suite powered by `Vitest`.
+
+Available commands:
+
+```bash
+npm test
+npm run test:run
+```
+
+Current coverage focus:
+
+- `src/tag-utils.js`
+- `src/sync-merge.js`
+- `src/main-cloud-service.js`
+
+The first suite validates core utility behavior, sync merge logic, and cloud transport error/status handling.
+
 ## Install
 
 ```bash
@@ -146,9 +165,14 @@ To put the app on Desktop after packaging:
 
 ## GitHub Actions
 
-The repository includes a workflow at `.github/workflows/build.yml`.
+The repository includes workflows at `.github/workflows/build.yml` and `.github/workflows/test.yml`.
 
-It runs:
+The test workflow runs:
+
+- on push to `main`
+- on pull requests
+
+The build/release workflow runs:
 
 - on manual trigger from GitHub Actions
 - automatically when a tag like `v1.0.0` is pushed
@@ -177,9 +201,10 @@ Produced artifacts:
 
 ## Testing Status
 
-- There is currently no dedicated automated test framework configured in the project.
-- Refactoring work is validated with syntax checks and manual app smoke tests.
-- Recommended next step: add automated unit tests for extracted modules and integration coverage for auth/sync flows.
+- The project now includes an initial Vitest-based automated suite.
+- Refactoring work is validated with syntax checks, automated tests, and manual app smoke tests.
+- Current suites cover merge logic, tag utilities, cloud service, auth session manager, and auth-sync controller.
+- Recommended next step: extend to Electron end-to-end smoke coverage with a staging Cognito user.
 
 Security defaults:
 

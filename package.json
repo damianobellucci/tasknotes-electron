@@ -6,6 +6,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "test": "vitest",
+    "test:run": "vitest run",
     "build": "rm -rf dist && electron-builder",
     "build:mac": "rm -rf dist && electron-builder --mac dmg zip",
     "build:win": "electron-builder --win nsis portable"
@@ -68,7 +70,8 @@
   },
   "devDependencies": {
     "electron": "^37.3.1",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1009.0",
