@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const fs = require('fs/promises');
 const path = require('path');
+const { safeStorage } = require('electron');
 try {
   const _envPath = app.isPackaged
     ? path.join(process.resourcesPath, '.env')
@@ -9,7 +10,8 @@ try {
 } catch {
   // dotenv is optional in packaged builds.
 }
-const { CognitoIdentityProviderClient, InitiateAuthCommand, RespondToAuthChallengeCommand } = require('@aws-sdk/client-cognito-identity-provider');
+const { createAuthSessionManager } = require('./src/main-auth-session');
+const { createCloudService } = require('./src/main-cloud-service');
 
 const DATA_FILE_NAME = 'task-manager-data.json';
 const DATA_SOURCE_FILE_NAME = 'tasknotes-data-source.json';
@@ -20,9 +22,6 @@ const CLOUD_SYNC_API_KEY = String(process.env.TASKNOTES_SYNC_API_KEY || '').trim
 const CLOUD_SYNC_TIMEOUT_MS = asInt(process.env.TASKNOTES_SYNC_TIMEOUT_MS, 12000);
 const COGNITO_REGION = String(process.env.TASKNOTES_COGNITO_REGION || '').trim();
 const COGNITO_CLIENT_ID = String(process.env.TASKNOTES_COGNITO_CLIENT_ID || '').trim();
-
-// Cognito token storage in memory, with encrypted persistence in userData.
-let cognitoTokens = null; // { idToken, accessToken, refreshToken, expiresAt, email }
 
 let dataFilePath = '';
 let defaultDataFilePath = '';
@@ -283,130 +282,6 @@ async function ensureDataFile() {
   }
 }
 
-function getAuthSessionFilePath() {
-  const basePath = userDataPath || app.getPath('userData');
-  return path.join(basePath, AUTH_SESSION_FILE_NAME);
-}
-
-async function clearPersistedAuthSession() {
-  try {
-    await fs.unlink(getAuthSessionFilePath());
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      throw error;
-    }
-  }
-}
-
-async function persistAuthSession() {
-  if (!cognitoTokens?.email || (!cognitoTokens?.idToken && !cognitoTokens?.refreshToken)) {
-    await clearPersistedAuthSession();
-    return;
-  }
-
-  await ensureDataFile();
-  const payloadText = JSON.stringify({
-    idToken: cognitoTokens.idToken || '',
-    accessToken: cognitoTokens.accessToken || '',
-    refreshToken: cognitoTokens.refreshToken || '',
-    expiresAt: Number(cognitoTokens.expiresAt || 0),
-    email: cognitoTokens.email || ''
-  });
-
-  const encrypted = safeStorage.isEncryptionAvailable();
-  const record = encrypted
-    ? {
-      version: 1,
-      encrypted: true,
-      payload: safeStorage.encryptString(payloadText).toString('base64')
-    }
-    : {
-      version: 1,
-      encrypted: false,
-      payload: payloadText
-    };
-
-  await writeJsonAtomic(getAuthSessionFilePath(), record);
-}
-
-async function readPersistedAuthSession() {
-  await ensureDataFile();
-
-  let raw;
-  try {
-    raw = await fs.readFile(getAuthSessionFilePath(), 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return null;
-    }
-    throw error;
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  let payloadText = '';
-  if (parsed?.encrypted) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      return null;
-    }
-    try {
-      payloadText = safeStorage.decryptString(Buffer.from(String(parsed.payload || ''), 'base64'));
-    } catch {
-      return null;
-    }
-  } else {
-    payloadText = String(parsed?.payload || '');
-  }
-
-  try {
-    const payload = JSON.parse(payloadText);
-    return {
-      idToken: typeof payload?.idToken === 'string' ? payload.idToken : '',
-      accessToken: typeof payload?.accessToken === 'string' ? payload.accessToken : '',
-      refreshToken: typeof payload?.refreshToken === 'string' ? payload.refreshToken : '',
-      expiresAt: Number(payload?.expiresAt || 0),
-      email: typeof payload?.email === 'string' ? payload.email : ''
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function restorePersistedAuthSession() {
-  if (!isCognitoConfigured()) {
-    cognitoTokens = null;
-    return;
-  }
-
-  const session = await readPersistedAuthSession();
-  if (!session?.email || (!session?.idToken && !session?.refreshToken)) {
-    cognitoTokens = null;
-    return;
-  }
-
-  cognitoTokens = {
-    idToken: session.idToken || '',
-    accessToken: session.accessToken || '',
-    refreshToken: session.refreshToken || '',
-    expiresAt: Number(session.expiresAt || 0),
-    email: session.email
-  };
-
-  if (!isCognitoTokenValid() && cognitoTokens.refreshToken) {
-    const refreshed = await refreshCognitoToken();
-    if (!refreshed) {
-      cognitoTokens = null;
-      await clearPersistedAuthSession();
-      return;
-    }
-  }
-}
-
 function isAllowedDataJsonName(fileName) {
   if (typeof fileName !== 'string') {
     return false;
@@ -539,121 +414,24 @@ async function saveData(nextData) {
   return { ok: true, savedAt: toIsoNow() };
 }
 
-function isCognitoConfigured() {
-  return Boolean(COGNITO_REGION && COGNITO_CLIENT_ID);
-}
+const authManager = createAuthSessionManager({
+  app,
+  fs,
+  path,
+  safeStorage,
+  ensureDataFile,
+  writeJsonAtomic,
+  authSessionFileName: AUTH_SESSION_FILE_NAME,
+  cognitoRegion: COGNITO_REGION,
+  cognitoClientId: COGNITO_CLIENT_ID
+});
 
-function isCloudSyncEnabled() {
-  return Boolean(CLOUD_SYNC_URL && (CLOUD_SYNC_API_KEY || isCognitoConfigured()));
-}
-
-function isCognitoTokenValid() {
-  return Boolean(cognitoTokens?.idToken && cognitoTokens.expiresAt > Date.now() + 30000);
-}
-
-async function refreshCognitoToken() {
-  if (!cognitoTokens?.refreshToken) return false;
-  try {
-    const client = new CognitoIdentityProviderClient({ region: COGNITO_REGION });
-    const cmd = new InitiateAuthCommand({
-      AuthFlow: 'REFRESH_TOKEN_AUTH',
-      ClientId: COGNITO_CLIENT_ID,
-      AuthParameters: { REFRESH_TOKEN: cognitoTokens.refreshToken }
-    });
-    const data = await client.send(cmd);
-    if (!data?.AuthenticationResult?.IdToken) return false;
-    cognitoTokens = {
-      ...cognitoTokens,
-      idToken: data.AuthenticationResult.IdToken,
-      accessToken: data.AuthenticationResult.AccessToken,
-      expiresAt: Date.now() + (data.AuthenticationResult.ExpiresIn || 3600) * 1000
-    };
-    await persistAuthSession();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function getCognitoIdToken() {
-  if (isCognitoTokenValid()) return cognitoTokens.idToken;
-  if (cognitoTokens?.refreshToken) {
-    const refreshed = await refreshCognitoToken();
-    if (refreshed) return cognitoTokens.idToken;
-  }
-  return null;
-}
-
-function makeCloudUrl(relativePath) {
-  return `${CLOUD_SYNC_URL}${relativePath}`;
-}
-
-async function cloudFetch(relativePath, options = {}) {
-  if (!CLOUD_SYNC_URL) {
-    return { ok: false, error: 'Cloud sync is not configured' };
-  }
-
-  let authHeaders = {};
-  if (isCognitoConfigured()) {
-    const idToken = await getCognitoIdToken();
-    if (!idToken) {
-      return { ok: false, error: 'Not logged in', code: 'UNAUTHENTICATED' };
-    }
-    authHeaders = { Authorization: `Bearer ${idToken}` };
-  } else if (CLOUD_SYNC_API_KEY) {
-    authHeaders = { 'x-api-key': CLOUD_SYNC_API_KEY };
-  } else {
-    return { ok: false, error: 'Cloud auth not configured' };
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CLOUD_SYNC_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(makeCloudUrl(relativePath), {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        'content-type': 'application/json',
-        ...authHeaders,
-        ...(options.headers || {})
-      }
-    });
-
-    const text = await response.text();
-    let payload = {};
-    if (text) {
-      try {
-        payload = JSON.parse(text);
-      } catch {
-        payload = { raw: text };
-      }
-    }
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        error: payload?.error || `HTTP ${response.status}`,
-        ...payload
-      };
-    }
-
-    return {
-      ok: true,
-      status: response.status,
-      ...payload
-    };
-  } catch (error) {
-    const timeoutError = error?.name === 'AbortError';
-    return {
-      ok: false,
-      error: timeoutError ? 'Cloud request timed out' : (error?.message || 'Cloud request failed')
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const cloudService = createCloudService({
+  cloudSyncUrl: CLOUD_SYNC_URL,
+  cloudSyncApiKey: CLOUD_SYNC_API_KEY,
+  cloudSyncTimeoutMs: CLOUD_SYNC_TIMEOUT_MS,
+  authManager
+});
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -698,109 +476,29 @@ ipcMain.handle('app:info', async () => {
     userDataPath: app.getPath('userData'),
     platform: process.platform,
     appVersion: app.getVersion(),
-    cloudSyncEnabled: isCloudSyncEnabled(),
-    cloudSyncMode: isCognitoConfigured() ? 'cognito' : 'shared-api-key'
+    cloudSyncEnabled: cloudService.isCloudSyncEnabled(),
+    cloudSyncMode: cloudService.getMode()
   };
 });
 
 ipcMain.handle('cloud:status', async () => {
-  if (isCognitoConfigured() && !isCognitoTokenValid() && cognitoTokens?.refreshToken) {
-    await refreshCognitoToken();
-  }
-
-  return {
-    ok: true,
-    enabled: isCloudSyncEnabled(),
-    mode: isCognitoConfigured() ? 'cognito' : 'shared-api-key',
-    apiUrl: CLOUD_SYNC_URL || '',
-    cognitoConfigured: isCognitoConfigured(),
-    loggedIn: isCognitoTokenValid(),
-    email: cognitoTokens?.email || ''
-  };
+  return cloudService.getStatus();
 });
 
 ipcMain.handle('auth:login', async (_event, { email, password }) => {
-  if (!isCognitoConfigured()) {
-    return { ok: false, error: 'Cognito is not configured' };
-  }
-  try {
-    const client = new CognitoIdentityProviderClient({ region: COGNITO_REGION });
-    const cmd = new InitiateAuthCommand({
-      AuthFlow: 'USER_PASSWORD_AUTH',
-      ClientId: COGNITO_CLIENT_ID,
-      AuthParameters: { USERNAME: email, PASSWORD: password }
-    });
-    const data = await client.send(cmd);
-    if (data?.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
-      return { ok: false, newPasswordRequired: true, session: data.Session, email };
-    }
-    const result = data?.AuthenticationResult;
-    if (!result?.IdToken) {
-      return { ok: false, error: `Risposta inattesa: ${data?.ChallengeName || 'nessun token'}` };
-    }
-    cognitoTokens = {
-      idToken: result.IdToken,
-      accessToken: result.AccessToken,
-      refreshToken: result.RefreshToken,
-      expiresAt: Date.now() + (result.ExpiresIn || 3600) * 1000,
-      email
-    };
-    await persistAuthSession();
-    return { ok: true, email };
-  } catch (err) {
-    const type = err?.name || '';
-    let msg = err?.message || 'Login failed';
-    if (type === 'NotAuthorizedException') msg = 'Email o password errati';
-    if (type === 'UserNotFoundException') msg = 'Utente non trovato';
-    if (type === 'UserNotConfirmedException') msg = 'Account non confermato';
-    return { ok: false, error: msg };
-  }
+  return authManager.login(email, password);
 });
 
 ipcMain.handle('auth:new-password', async (_event, { email, newPassword, session }) => {
-  if (!isCognitoConfigured()) return { ok: false, error: 'Cognito non configurato' };
-  try {
-    const client = new CognitoIdentityProviderClient({ region: COGNITO_REGION });
-    const cmd = new RespondToAuthChallengeCommand({
-      ChallengeName: 'NEW_PASSWORD_REQUIRED',
-      ClientId: COGNITO_CLIENT_ID,
-      Session: session,
-      ChallengeResponses: { USERNAME: email, NEW_PASSWORD: newPassword }
-    });
-    const data = await client.send(cmd);
-    const result = data?.AuthenticationResult;
-    if (!result?.IdToken) return { ok: false, error: 'Risposta inattesa dopo cambio password' };
-    cognitoTokens = {
-      idToken: result.IdToken,
-      accessToken: result.AccessToken,
-      refreshToken: result.RefreshToken || cognitoTokens?.refreshToken,
-      expiresAt: Date.now() + (result.ExpiresIn || 3600) * 1000,
-      email
-    };
-    await persistAuthSession();
-    return { ok: true, email };
-  } catch (err) {
-    return { ok: false, error: err?.message || 'Errore cambio password' };
-  }
+  return authManager.completeNewPassword(email, newPassword, session);
 });
 
 ipcMain.handle('auth:logout', async () => {
-  cognitoTokens = null;
-  await clearPersistedAuthSession();
-  return { ok: true };
+  return authManager.logout();
 });
 
 ipcMain.handle('auth:status', async () => {
-  if (isCognitoConfigured() && !isCognitoTokenValid() && cognitoTokens?.refreshToken) {
-    await refreshCognitoToken();
-  }
-
-  return {
-    ok: true,
-    cognitoConfigured: isCognitoConfigured(),
-    loggedIn: isCognitoTokenValid(),
-    email: cognitoTokens?.email || ''
-  };
+  return authManager.getStatus();
 });
 
 ipcMain.handle('cloud:push', async (_event, payload) => {
@@ -808,7 +506,7 @@ ipcMain.handle('cloud:push', async (_event, payload) => {
   const clientUpdatedAt = typeof payload?.clientUpdatedAt === 'string' ? payload.clientUpdatedAt : toIsoNow();
   const baseServerUpdatedAt = typeof payload?.baseServerUpdatedAt === 'string' ? payload.baseServerUpdatedAt : '';
 
-  const result = await cloudFetch('/sync/push', {
+  const result = await cloudService.cloudFetch('/sync/push', {
     method: 'POST',
     body: JSON.stringify({
       snapshot,
@@ -830,7 +528,7 @@ ipcMain.handle('cloud:push', async (_event, payload) => {
 ipcMain.handle('cloud:pull', async (_event, payload) => {
   const since = typeof payload?.since === 'string' ? payload.since : '';
   const query = since ? `?since=${encodeURIComponent(since)}` : '';
-  const result = await cloudFetch(`/sync/pull${query}`, { method: 'GET' });
+  const result = await cloudService.cloudFetch(`/sync/pull${query}`, { method: 'GET' });
 
   if (!result?.ok) {
     return result;
@@ -944,7 +642,7 @@ ipcMain.handle('data:import', async () => {
 
 app.whenReady().then(async () => {
   await ensureDataFile();
-  await restorePersistedAuthSession();
+  await authManager.restorePersistedAuthSession();
   createWindow();
 
   app.on('activate', () => {
