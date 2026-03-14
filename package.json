@@ -1,6 +1,6 @@
 {
   "name": "tasknotes-electron",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Fast local task and notes manager with Electron and JSON file persistence",
   "main": "main.js",
   "scripts": {
@@ -28,7 +28,10 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": ".env", "to": ".env" }
+      {
+        "from": ".env",
+        "to": ".env"
+      }
     ],
     "directories": {
       "output": "dist"

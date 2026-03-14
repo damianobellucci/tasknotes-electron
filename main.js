@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage } = require('electron');
 const fs = require('fs/promises');
 const path = require('path');
 try {
@@ -13,6 +13,7 @@ const { CognitoIdentityProviderClient, InitiateAuthCommand, RespondToAuthChallen
 
 const DATA_FILE_NAME = 'task-manager-data.json';
 const DATA_SOURCE_FILE_NAME = 'tasknotes-data-source.json';
+const AUTH_SESSION_FILE_NAME = 'tasknotes-auth-session.json';
 const APP_VERSION = 1;
 const CLOUD_SYNC_URL = String(process.env.TASKNOTES_SYNC_URL || '').trim().replace(/\/+$/, '');
 const CLOUD_SYNC_API_KEY = String(process.env.TASKNOTES_SYNC_API_KEY || '').trim();
@@ -20,7 +21,7 @@ const CLOUD_SYNC_TIMEOUT_MS = asInt(process.env.TASKNOTES_SYNC_TIMEOUT_MS, 12000
 const COGNITO_REGION = String(process.env.TASKNOTES_COGNITO_REGION || '').trim();
 const COGNITO_CLIENT_ID = String(process.env.TASKNOTES_COGNITO_CLIENT_ID || '').trim();
 
-// In-memory Cognito token storage (never persisted to disk)
+// Cognito token storage in memory, with encrypted persistence in userData.
 let cognitoTokens = null; // { idToken, accessToken, refreshToken, expiresAt, email }
 
 let dataFilePath = '';
@@ -282,6 +283,130 @@ async function ensureDataFile() {
   }
 }
 
+function getAuthSessionFilePath() {
+  const basePath = userDataPath || app.getPath('userData');
+  return path.join(basePath, AUTH_SESSION_FILE_NAME);
+}
+
+async function clearPersistedAuthSession() {
+  try {
+    await fs.unlink(getAuthSessionFilePath());
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+async function persistAuthSession() {
+  if (!cognitoTokens?.email || (!cognitoTokens?.idToken && !cognitoTokens?.refreshToken)) {
+    await clearPersistedAuthSession();
+    return;
+  }
+
+  await ensureDataFile();
+  const payloadText = JSON.stringify({
+    idToken: cognitoTokens.idToken || '',
+    accessToken: cognitoTokens.accessToken || '',
+    refreshToken: cognitoTokens.refreshToken || '',
+    expiresAt: Number(cognitoTokens.expiresAt || 0),
+    email: cognitoTokens.email || ''
+  });
+
+  const encrypted = safeStorage.isEncryptionAvailable();
+  const record = encrypted
+    ? {
+      version: 1,
+      encrypted: true,
+      payload: safeStorage.encryptString(payloadText).toString('base64')
+    }
+    : {
+      version: 1,
+      encrypted: false,
+      payload: payloadText
+    };
+
+  await writeJsonAtomic(getAuthSessionFilePath(), record);
+}
+
+async function readPersistedAuthSession() {
+  await ensureDataFile();
+
+  let raw;
+  try {
+    raw = await fs.readFile(getAuthSessionFilePath(), 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  let payloadText = '';
+  if (parsed?.encrypted) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return null;
+    }
+    try {
+      payloadText = safeStorage.decryptString(Buffer.from(String(parsed.payload || ''), 'base64'));
+    } catch {
+      return null;
+    }
+  } else {
+    payloadText = String(parsed?.payload || '');
+  }
+
+  try {
+    const payload = JSON.parse(payloadText);
+    return {
+      idToken: typeof payload?.idToken === 'string' ? payload.idToken : '',
+      accessToken: typeof payload?.accessToken === 'string' ? payload.accessToken : '',
+      refreshToken: typeof payload?.refreshToken === 'string' ? payload.refreshToken : '',
+      expiresAt: Number(payload?.expiresAt || 0),
+      email: typeof payload?.email === 'string' ? payload.email : ''
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function restorePersistedAuthSession() {
+  if (!isCognitoConfigured()) {
+    cognitoTokens = null;
+    return;
+  }
+
+  const session = await readPersistedAuthSession();
+  if (!session?.email || (!session?.idToken && !session?.refreshToken)) {
+    cognitoTokens = null;
+    return;
+  }
+
+  cognitoTokens = {
+    idToken: session.idToken || '',
+    accessToken: session.accessToken || '',
+    refreshToken: session.refreshToken || '',
+    expiresAt: Number(session.expiresAt || 0),
+    email: session.email
+  };
+
+  if (!isCognitoTokenValid() && cognitoTokens.refreshToken) {
+    const refreshed = await refreshCognitoToken();
+    if (!refreshed) {
+      cognitoTokens = null;
+      await clearPersistedAuthSession();
+      return;
+    }
+  }
+}
+
 function isAllowedDataJsonName(fileName) {
   if (typeof fileName !== 'string') {
     return false;
@@ -443,6 +568,7 @@ async function refreshCognitoToken() {
       accessToken: data.AuthenticationResult.AccessToken,
       expiresAt: Date.now() + (data.AuthenticationResult.ExpiresIn || 3600) * 1000
     };
+    await persistAuthSession();
     return true;
   } catch {
     return false;
@@ -578,13 +704,17 @@ ipcMain.handle('app:info', async () => {
 });
 
 ipcMain.handle('cloud:status', async () => {
+  if (isCognitoConfigured() && !isCognitoTokenValid() && cognitoTokens?.refreshToken) {
+    await refreshCognitoToken();
+  }
+
   return {
     ok: true,
     enabled: isCloudSyncEnabled(),
     mode: isCognitoConfigured() ? 'cognito' : 'shared-api-key',
     apiUrl: CLOUD_SYNC_URL || '',
     cognitoConfigured: isCognitoConfigured(),
-    loggedIn: Boolean(cognitoTokens?.idToken),
+    loggedIn: isCognitoTokenValid(),
     email: cognitoTokens?.email || ''
   };
 });
@@ -615,6 +745,7 @@ ipcMain.handle('auth:login', async (_event, { email, password }) => {
       expiresAt: Date.now() + (result.ExpiresIn || 3600) * 1000,
       email
     };
+    await persistAuthSession();
     return { ok: true, email };
   } catch (err) {
     const type = err?.name || '';
@@ -642,10 +773,11 @@ ipcMain.handle('auth:new-password', async (_event, { email, newPassword, session
     cognitoTokens = {
       idToken: result.IdToken,
       accessToken: result.AccessToken,
-      refreshToken: result.RefreshToken,
+      refreshToken: result.RefreshToken || cognitoTokens?.refreshToken,
       expiresAt: Date.now() + (result.ExpiresIn || 3600) * 1000,
       email
     };
+    await persistAuthSession();
     return { ok: true, email };
   } catch (err) {
     return { ok: false, error: err?.message || 'Errore cambio password' };
@@ -654,14 +786,19 @@ ipcMain.handle('auth:new-password', async (_event, { email, newPassword, session
 
 ipcMain.handle('auth:logout', async () => {
   cognitoTokens = null;
+  await clearPersistedAuthSession();
   return { ok: true };
 });
 
 ipcMain.handle('auth:status', async () => {
+  if (isCognitoConfigured() && !isCognitoTokenValid() && cognitoTokens?.refreshToken) {
+    await refreshCognitoToken();
+  }
+
   return {
     ok: true,
     cognitoConfigured: isCognitoConfigured(),
-    loggedIn: Boolean(cognitoTokens?.idToken),
+    loggedIn: isCognitoTokenValid(),
     email: cognitoTokens?.email || ''
   };
 });
@@ -805,7 +942,9 @@ ipcMain.handle('data:import', async () => {
   return { ok: true, data: importedData, filePath: importPath };
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await ensureDataFile();
+  await restorePersistedAuthSession();
   createWindow();
 
   app.on('activate', () => {

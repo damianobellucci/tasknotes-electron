@@ -1120,6 +1120,15 @@ function setCloudSyncedStatus() {
 }
 
 async function onLogout() {
+  // Warn if there is local data that hasn't been pushed to the cloud yet.
+  // After logout the workspace is cleared so the next user starts clean.
+  if (hasUnsyncedLocalChanges()) {
+    const confirmed = window.confirm(
+      'Hai modifiche locali non ancora sincronizzate con il cloud.\nSe esci ora andranno perse. Continuare?'
+    );
+    if (!confirmed) return;
+  }
+
   await window.electronAPI.authLogout();
   state.authLoggedIn = false;
   state.authEmail = '';
@@ -1129,6 +1138,18 @@ async function onLogout() {
     clearInterval(state.cloudSyncTimer);
     state.cloudSyncTimer = null;
   }
+  // Clear all user data and sync metadata so the next login (same or different
+  // account) always starts with a clean local state and pulls fresh from cloud.
+  state.tasks = [];
+  state.notes = [];
+  state.tags = [];
+  state.deletedSnapshot = null;
+  state.cloudServerUpdatedAt = '';
+  state.cloudBaseSnapshot = null;
+  state.cloudLastSnapshotHash = '';
+  state.cloudLastSyncAt = '';
+  await persistStateToDisk();
+  render();
   updateAuthUI();
   setStatus('Disconnesso');
 }
@@ -1252,6 +1273,24 @@ async function pullFromCloud() {
       state.cloudLastSnapshotHash = remoteHash;
       state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || state.cloudLastSyncAt;
       await persistStateToDisk();
+      return;
+    }
+
+    // cloudBaseSnapshot is null on the first pull after login (including a
+    // login with a different account). In that case skip the three-way merge
+    // and treat the cloud data as authoritative so we don't bleed the previous
+    // user's local items into the new user's workspace.
+    if (!state.cloudBaseSnapshot) {
+      state.cloudBaseSnapshot = cloneSnapshot(remoteData);
+      state.cloudServerUpdatedAt = result.serverUpdatedAt || '';
+      state.cloudLastSnapshotHash = remoteHash;
+      state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || state.cloudLastSyncAt;
+      applyLoadedData({
+        ...remoteData,
+        sync: { serverUpdatedAt: state.cloudServerUpdatedAt, lastSyncedSnapshot: state.cloudBaseSnapshot }
+      });
+      await persistStateToDisk();
+      render();
       return;
     }
 
