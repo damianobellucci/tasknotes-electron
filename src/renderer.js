@@ -1,6 +1,16 @@
 const SAVE_DEBOUNCE_MS = 450;
 const UNDO_TIMEOUT_MS = 5000;
 const CLOUD_SYNC_INTERVAL_MS = 30000;
+const tagUtils = window.TaskNotesTagUtils;
+const syncMerge = window.TaskNotesSyncMerge;
+
+if (!tagUtils) {
+  throw new Error('TaskNotesTagUtils module is required before renderer.js');
+}
+
+if (!syncMerge) {
+  throw new Error('TaskNotesSyncMerge module is required before renderer.js');
+}
 
 const state = {
   tasks: [],
@@ -1502,132 +1512,18 @@ async function persistStateToDisk() {
 }
 
 function hasUnsyncedLocalChanges(snapshot = getSerializableState()) {
-  if (!state.cloudBaseSnapshot) {
-    return snapshot.tasks.length > 0
-      || snapshot.notes.length > 0
-      || snapshot.tags.length > 0
-      || snapshot.settings.taskSort !== 'manual'
-      || snapshot.settings.noteSort !== 'manual';
-  }
-
-  return JSON.stringify(snapshot) !== JSON.stringify(state.cloudBaseSnapshot);
+  return syncMerge.hasUnsyncedLocalChanges(snapshot, state.cloudBaseSnapshot);
 }
 
 function cloneSnapshot(snapshot) {
-  return snapshot ? JSON.parse(JSON.stringify(snapshot)) : null;
+  return syncMerge.cloneSnapshot(snapshot);
 }
 
 function mergeSnapshots(baseSnapshot, localSnapshot, remoteSnapshot) {
-  const base = baseSnapshot || { tasks: [], notes: [], tags: [], settings: { taskSort: 'manual', noteSort: 'manual' }, version: 1 };
-  const local = localSnapshot || { tasks: [], notes: [], tags: [], settings: { taskSort: 'manual', noteSort: 'manual' }, version: 1 };
-  const remote = remoteSnapshot || { tasks: [], notes: [], tags: [], settings: { taskSort: 'manual', noteSort: 'manual' }, version: 1 };
-
-  const taskMerge = mergeItemCollections(base.tasks, local.tasks, remote.tasks);
-  const noteMerge = mergeItemCollections(base.notes, local.notes, remote.notes);
-  const localSettingsChanged = JSON.stringify(local.settings || {}) !== JSON.stringify(base.settings || {});
-  const remoteSettingsChanged = JSON.stringify(remote.settings || {}) !== JSON.stringify(base.settings || {});
-
-  return {
-    snapshot: {
-      tasks: taskMerge.items,
-      notes: noteMerge.items,
-      tags: sanitizeTagList([...(remote.tags || []), ...(local.tags || []), ...(base.tags || [])]),
-      settings: localSettingsChanged ? { ...(remote.settings || {}), ...(local.settings || {}) } : { ...(remoteSettingsChanged ? remote.settings : local.settings) },
-      version: Math.max(base.version || 1, local.version || 1, remote.version || 1)
-    },
-    conflicts: taskMerge.conflicts + noteMerge.conflicts
-  };
-}
-
-function mergeItemCollections(baseItems = [], localItems = [], remoteItems = []) {
-  const baseMap = new Map(baseItems.map((item) => [item.id, item]));
-  const localMap = new Map(localItems.map((item) => [item.id, item]));
-  const remoteMap = new Map(remoteItems.map((item) => [item.id, item]));
-  const orderedIds = [];
-  const seen = new Set();
-
-  [remoteItems, localItems, baseItems].forEach((items) => {
-    items.forEach((item) => {
-      if (!item?.id || seen.has(item.id)) {
-        return;
-      }
-      seen.add(item.id);
-      orderedIds.push(item.id);
-    });
+  return syncMerge.mergeSnapshots(baseSnapshot, localSnapshot, remoteSnapshot, {
+    sanitizeTagList,
+    generateId
   });
-
-  const merged = [];
-  let conflicts = 0;
-
-  orderedIds.forEach((id) => {
-    const baseItem = baseMap.get(id) || null;
-    const localItem = localMap.get(id) || null;
-    const remoteItem = remoteMap.get(id) || null;
-    const localChanged = hasItemChanged(baseItem, localItem);
-    const remoteChanged = hasItemChanged(baseItem, remoteItem);
-
-    if (!localChanged && !remoteChanged) {
-      if (remoteItem || localItem || baseItem) {
-        merged.push(cloneSnapshot(remoteItem || localItem || baseItem));
-      }
-      return;
-    }
-
-    if (localChanged && !remoteChanged) {
-      if (localItem) {
-        merged.push(cloneSnapshot(localItem));
-      }
-      return;
-    }
-
-    if (!localChanged && remoteChanged) {
-      if (remoteItem) {
-        merged.push(cloneSnapshot(remoteItem));
-      }
-      return;
-    }
-
-    if (areItemsEqual(localItem, remoteItem)) {
-      if (localItem || remoteItem) {
-        merged.push(cloneSnapshot(localItem || remoteItem));
-      }
-      return;
-    }
-
-    if (remoteItem) {
-      merged.push(cloneSnapshot(remoteItem));
-    }
-    if (localItem) {
-      merged.push(createConflictCopy(localItem));
-      conflicts += 1;
-    }
-  });
-
-  resequenceManualOrder(merged);
-  return { items: merged, conflicts };
-}
-
-function hasItemChanged(baseItem, currentItem) {
-  if (!baseItem && !currentItem) {
-    return false;
-  }
-  if (!baseItem || !currentItem) {
-    return true;
-  }
-  return !areItemsEqual(baseItem, currentItem);
-}
-
-function areItemsEqual(left, right) {
-  return JSON.stringify(left || null) === JSON.stringify(right || null);
-}
-
-function createConflictCopy(item) {
-  const copy = cloneSnapshot(item);
-  const prefix = '[Conflict copy] ';
-  copy.id = generateId(copy.type === 'task' ? 'task' : 'note');
-  copy.text = copy.text && copy.text.startsWith(prefix) ? copy.text : `${prefix}${copy.text || ''}`;
-  copy.updatedAt = new Date().toISOString();
-  return copy;
 }
 
 function renderGlobalTagsBar() {
@@ -1793,33 +1689,11 @@ function removeTagFromItem(type, id, rawTag) {
 }
 
 function normalizeTag(value) {
-  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+  return tagUtils.normalizeTag(value);
 }
 
 function sanitizeTagList(rawTags) {
-  if (!Array.isArray(rawTags)) {
-    return [];
-  }
-
-  const dedupe = new Set();
-  const tags = [];
-
-  rawTags.forEach((tag) => {
-    const normalized = normalizeTag(tag);
-    if (!normalized) {
-      return;
-    }
-
-    const key = normalized.toLowerCase();
-    if (dedupe.has(key)) {
-      return;
-    }
-
-    dedupe.add(key);
-    tags.push(normalized);
-  });
-
-  return tags;
+  return tagUtils.sanitizeTagList(rawTags);
 }
 
 function focusItem(id) {
