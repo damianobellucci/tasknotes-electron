@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.1.3] - 2026-03-14
+
+### Added
+- Automated test suites for `main-auth-session` and `auth-sync-controller` modules.
+- CI test workflow to run Vitest on pushes to `main` and pull requests.
+
+### Changed
+- Testable module exports for renderer and main auth/sync components to support Node-based unit tests.
+- README testing section updated to reflect expanded suite coverage.
+
+### Fixed
+- Improved regression protection for login/logout/session-restore and unsynced-logout behaviors.
+
 ## [1.1.2] - 2026-03-14
 
 ### Added
