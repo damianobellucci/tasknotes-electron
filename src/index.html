@@ -60,6 +60,8 @@
           <button id="importButton" class="ghost">Import</button>
           <button id="selectDataFileButton" class="ghost">Data File...</button>
           <button id="defaultDataFileButton" class="ghost">Use Default Data</button>
+          <button id="loginButton" class="ghost">Login</button>
+          <button id="logoutButton" class="ghost" style="display:none">Logout</button>
         </div>
 
         <aside id="taskStats" class="task-stats"></aside>
@@ -74,6 +76,36 @@
     <div id="toast" class="toast" aria-live="assertive" aria-hidden="true">
       <span id="toastMessage"></span>
       <button id="toastUndo" class="ghost">Undo</button>
+    </div>
+
+    <div id="loginModal" class="modal" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
+        <h2 id="loginModalTitle">Accedi a TaskNotes</h2>
+        <p class="modal-subtitle">Inserisci le credenziali per abilitare la sincronizzazione cloud.</p>
+        <div class="modal-row">
+          <label style="flex:1">
+            <span style="display:block;margin-bottom:4px;font-size:0.85rem">Email</span>
+            <input id="loginEmailInput" type="email" placeholder="tu@esempio.com" style="width:100%" autocomplete="username" />
+          </label>
+        </div>
+        <div class="modal-row">
+          <label style="flex:1">
+            <span style="display:block;margin-bottom:4px;font-size:0.85rem">Password</span>
+            <input id="loginPasswordInput" type="password" placeholder="••••••••" style="width:100%" autocomplete="current-password" />
+          </label>
+        </div>
+        <div id="loginNewPasswordRow" class="modal-row" style="display:none">
+          <label style="flex:1">
+            <span style="display:block;margin-bottom:4px;font-size:0.85rem">Nuova password permanente</span>
+            <input id="loginNewPasswordInput" type="password" placeholder="Min 8 caratteri" style="width:100%" />
+          </label>
+        </div>
+        <div id="loginError" style="color:#e74c3c;font-size:0.85rem;min-height:1.2em"></div>
+        <div class="modal-actions">
+          <button id="loginSubmitButton" class="primary">Accedi</button>
+          <button id="loginSkipButton" class="ghost">Salta (solo locale)</button>
+        </div>
+      </div>
     </div>
 
     <div id="dataPickerModal" class="modal" aria-hidden="true">

@@ -37,6 +37,40 @@ npm install
 npm start
 ```
 
+## AWS Cloud Sync
+
+TaskNotes supports optional cloud sync against an AWS backend.
+The recommended setup uses Cognito login so each user syncs their own dataset.
+
+Set these environment variables before launching the app:
+
+```bash
+export TASKNOTES_SYNC_URL="https://your-api-id.execute-api.eu-west-1.amazonaws.com/prod"
+export TASKNOTES_COGNITO_REGION="eu-west-1"
+export TASKNOTES_COGNITO_CLIENT_ID="your-cognito-app-client-id"
+export TASKNOTES_SYNC_TIMEOUT_MS="12000"
+npm start
+```
+
+Legacy shared API key mode is still supported for migration scenarios:
+
+```bash
+export TASKNOTES_SYNC_API_KEY="your-shared-key"
+```
+
+Expected backend endpoints:
+
+- `POST /sync/push` with body `{ snapshot, clientUpdatedAt }`
+- `GET /sync/pull?since=<iso-date>`
+
+Expected response payloads:
+
+- push: `{ ok: true, serverUpdatedAt }`
+- pull: `{ ok: true, snapshot, serverUpdatedAt }`
+
+If cloud variables are not set, the app keeps working in local-only mode.
+Local `.env` files are ignored by git and should not be committed.
+
 ## Data File Location
 
 The app stores data in Electron user data path:

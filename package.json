@@ -1,6 +1,6 @@
 {
   "name": "tasknotes-electron",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Fast local task and notes manager with Electron and JSON file persistence",
   "main": "main.js",
   "scripts": {
@@ -63,5 +63,8 @@
   "devDependencies": {
     "electron": "^37.3.1",
     "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1009.0"
   }
 }

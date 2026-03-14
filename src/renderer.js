@@ -1,5 +1,6 @@
 const SAVE_DEBOUNCE_MS = 450;
 const UNDO_TIMEOUT_MS = 5000;
+const CLOUD_SYNC_INTERVAL_MS = 30000;
 
 const state = {
   tasks: [],
@@ -25,7 +26,15 @@ const state = {
   deletedSnapshot: null,
   undoTimer: null,
   toastTimer: null,
-  dragItemId: null
+  dragItemId: null,
+  cloudSyncEnabled: false,
+  cloudSyncInFlight: false,
+  cloudSyncPendingPush: false,
+  cloudSyncTimer: null,
+  cloudLastSyncAt: '',
+  cloudLastSnapshotHash: '',
+  authLoggedIn: false,
+  authEmail: ''
 };
 
 const refs = {};
@@ -36,6 +45,7 @@ async function init() {
   bindRefs();
   bindStaticEvents();
   await loadInitialData();
+  await initAuth();
   render();
 }
 
@@ -56,6 +66,16 @@ function bindRefs() {
   refs.importButton = document.getElementById('importButton');
   refs.selectDataFileButton = document.getElementById('selectDataFileButton');
   refs.defaultDataFileButton = document.getElementById('defaultDataFileButton');
+  refs.loginButton = document.getElementById('loginButton');
+  refs.logoutButton = document.getElementById('logoutButton');
+  refs.loginModal = document.getElementById('loginModal');
+  refs.loginEmailInput = document.getElementById('loginEmailInput');
+  refs.loginPasswordInput = document.getElementById('loginPasswordInput');
+  refs.loginError = document.getElementById('loginError');
+  refs.loginSubmitButton = document.getElementById('loginSubmitButton');
+  refs.loginSkipButton = document.getElementById('loginSkipButton');
+  refs.loginNewPasswordRow = document.getElementById('loginNewPasswordRow');
+  refs.loginNewPasswordInput = document.getElementById('loginNewPasswordInput');
   refs.activeDataHint = document.getElementById('activeDataHint');
   refs.taskStats = document.getElementById('taskStats');
   refs.listContainer = document.getElementById('listContainer');
@@ -123,6 +143,14 @@ function bindStaticEvents() {
   refs.defaultDataFileButton.addEventListener('click', onUseDefaultDataFile);
   refs.createDataFileButton.addEventListener('click', onCreateDataFile);
   refs.closeDataPickerButton.addEventListener('click', closeDataPicker);
+
+  refs.loginButton.addEventListener('click', openLoginModal);
+  refs.logoutButton.addEventListener('click', onLogout);
+  refs.loginSubmitButton.addEventListener('click', onLoginSubmit);
+  refs.loginSkipButton.addEventListener('click', closeLoginModal);
+  refs.loginPasswordInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') onLoginSubmit();
+  });
 
   refs.toastUndo.addEventListener('click', undoDelete);
 
@@ -767,6 +795,7 @@ async function saveNow() {
   state.saveInFlight = true;
   try {
     await window.electronAPI.saveData(payload);
+    queueCloudPush(payload);
     setStatus('All changes saved');
   } catch (error) {
     setStatus(`Save error: ${error.message}`);
@@ -964,6 +993,250 @@ async function flushPendingSave() {
 async function waitForSaveIdle() {
   while (state.saveInFlight) {
     await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+}
+
+async function initAuth() {
+  try {
+    const status = await window.electronAPI.getCloudSyncStatus();
+    if (!status?.cognitoConfigured) {
+      // Cognito not configured → skip login, start cloud sync with API key if available
+      await initCloudSync();
+      return;
+    }
+
+    const authStatus = await window.electronAPI.authGetStatus();
+    if (authStatus?.loggedIn) {
+      state.authLoggedIn = true;
+      state.authEmail = authStatus.email || '';
+      updateAuthUI();
+      await initCloudSync();
+    } else {
+      openLoginModal();
+    }
+  } catch {
+    await initCloudSync();
+  }
+}
+
+function openLoginModal() {
+  refs.loginModal.classList.add('visible');
+  refs.loginModal.setAttribute('aria-hidden', 'false');
+  refs.loginError.textContent = '';
+  refs.loginEmailInput.value = '';
+  refs.loginPasswordInput.value = '';
+  refs.loginNewPasswordRow.style.display = 'none';
+  refs.loginNewPasswordInput.value = '';
+  refs.loginSubmitButton.textContent = 'Accedi';
+  state._loginSession = null;
+  setTimeout(() => refs.loginEmailInput.focus(), 50);
+}
+
+function closeLoginModal() {
+  refs.loginModal.classList.remove('visible');
+  refs.loginModal.setAttribute('aria-hidden', 'true');
+}
+
+async function onLoginSubmit() {
+  // If we're in the NEW_PASSWORD_REQUIRED step, handle that
+  if (state._loginSession) {
+    await onNewPasswordSubmit();
+    return;
+  }
+
+  const email = refs.loginEmailInput.value.trim();
+  const password = refs.loginPasswordInput.value;
+  if (!email || !password) {
+    refs.loginError.textContent = 'Inserisci email e password.';
+    return;
+  }
+
+  refs.loginSubmitButton.disabled = true;
+  refs.loginSubmitButton.textContent = 'Accesso…';
+  refs.loginError.textContent = '';
+
+  try {
+    const result = await window.electronAPI.authLogin(email, password);
+    if (result?.newPasswordRequired) {
+      // Show new password field
+      state._loginSession = result.session;
+      state._loginEmail = result.email;
+      refs.loginNewPasswordRow.style.display = 'flex';
+      refs.loginNewPasswordInput.focus();
+      refs.loginError.textContent = 'Primo accesso: imposta una nuova password permanente.';
+      refs.loginSubmitButton.textContent = 'Imposta password';
+      return;
+    }
+    if (!result?.ok) {
+      refs.loginError.textContent = result?.error || 'Login fallito.';
+      return;
+    }
+    await onLoginSuccess(result.email || email);
+  } finally {
+    refs.loginSubmitButton.disabled = false;
+    if (!state._loginSession) refs.loginSubmitButton.textContent = 'Accedi';
+  }
+}
+
+async function onNewPasswordSubmit() {
+  const newPassword = refs.loginNewPasswordInput.value;
+  if (!newPassword || newPassword.length < 8) {
+    refs.loginError.textContent = 'La password deve essere di almeno 8 caratteri.';
+    return;
+  }
+  refs.loginSubmitButton.disabled = true;
+  refs.loginSubmitButton.textContent = 'Salvataggio…';
+  refs.loginError.textContent = '';
+  try {
+    const result = await window.electronAPI.authNewPassword(state._loginEmail, newPassword, state._loginSession);
+    if (!result?.ok) {
+      refs.loginError.textContent = result?.error || 'Errore cambio password.';
+      return;
+    }
+    state._loginSession = null;
+    await onLoginSuccess(result.email || state._loginEmail);
+  } finally {
+    refs.loginSubmitButton.disabled = false;
+  }
+}
+
+async function onLoginSuccess(email) {
+  state.authLoggedIn = true;
+  state.authEmail = email;
+  updateAuthUI();
+  closeLoginModal();
+  if (state.cloudSyncTimer) clearInterval(state.cloudSyncTimer);
+  await initCloudSync();
+  setStatus(`Connesso come ${email}`);
+}
+
+function setCloudSyncedStatus() {
+  const formattedSyncTime = formatDate(state.cloudLastSyncAt);
+  setStatus(formattedSyncTime === '-' ? 'Cloud sincronizzato' : `Cloud sincronizzato ${formattedSyncTime}`);
+}
+
+async function onLogout() {
+  await window.electronAPI.authLogout();
+  state.authLoggedIn = false;
+  state.authEmail = '';
+  state.cloudSyncEnabled = false;
+  if (state.cloudSyncTimer) {
+    clearInterval(state.cloudSyncTimer);
+    state.cloudSyncTimer = null;
+  }
+  updateAuthUI();
+  setStatus('Disconnesso');
+}
+
+function updateAuthUI() {
+  if (refs.loginButton) refs.loginButton.style.display = state.authLoggedIn ? 'none' : 'inline-flex';
+  if (refs.logoutButton) {
+    refs.logoutButton.style.display = state.authLoggedIn ? 'inline-flex' : 'none';
+    refs.logoutButton.textContent = state.authEmail ? `Logout (${state.authEmail})` : 'Logout';
+  }
+}
+
+async function initCloudSync() {
+  try {
+    const status = await window.electronAPI.getCloudSyncStatus();
+    state.cloudSyncEnabled = Boolean(status?.enabled) && (!status?.cognitoConfigured || state.authLoggedIn);
+
+    if (!state.cloudSyncEnabled) {
+      return;
+    }
+
+    await pullFromCloud();
+    state.cloudSyncTimer = setInterval(() => {
+      pullFromCloud();
+    }, CLOUD_SYNC_INTERVAL_MS);
+  } catch {
+    state.cloudSyncEnabled = false;
+  }
+}
+
+function queueCloudPush(payload) {
+  if (!state.cloudSyncEnabled) {
+    return;
+  }
+
+  const snapshot = payload || getSerializableState();
+  const snapshotHash = JSON.stringify(snapshot);
+  if (snapshotHash === state.cloudLastSnapshotHash) {
+    return;
+  }
+
+  void pushToCloud(snapshot, snapshotHash);
+}
+
+async function pushToCloud(snapshot, snapshotHash) {
+  if (state.cloudSyncInFlight) {
+    state.cloudSyncPendingPush = true;
+    return;
+  }
+
+  state.cloudSyncInFlight = true;
+  try {
+    const result = await window.electronAPI.cloudPush({
+      snapshot,
+      clientUpdatedAt: new Date().toISOString()
+    });
+
+    if (!result?.ok) {
+      setStatus(`Cloud sync pending: ${result?.error || 'push failed'}`);
+      state.cloudSyncPendingPush = true;
+      return;
+    }
+
+    state.cloudLastSnapshotHash = snapshotHash;
+    state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || new Date().toISOString();
+    setCloudSyncedStatus();
+  } catch (error) {
+    setStatus(`Cloud sync pending: ${error.message}`);
+    state.cloudSyncPendingPush = true;
+  } finally {
+    state.cloudSyncInFlight = false;
+
+    if (state.cloudSyncPendingPush) {
+      state.cloudSyncPendingPush = false;
+      void pushToCloud(getSerializableState(), JSON.stringify(getSerializableState()));
+    }
+  }
+}
+
+async function pullFromCloud() {
+  if (!state.cloudSyncEnabled || state.cloudSyncInFlight || state.saveInFlight) {
+    return;
+  }
+
+  state.cloudSyncInFlight = true;
+  try {
+    const result = await window.electronAPI.cloudPull({ since: state.cloudLastSyncAt || '' });
+    if (!result?.ok) {
+      return;
+    }
+
+    const remoteData = result.snapshot || result.data;
+    if (!remoteData) {
+      return;
+    }
+
+    const remoteHash = JSON.stringify(remoteData);
+    const localHash = JSON.stringify(getSerializableState());
+    if (remoteHash === localHash) {
+      state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || state.cloudLastSyncAt;
+      return;
+    }
+
+    applyLoadedData(remoteData);
+    await window.electronAPI.saveData(getSerializableState());
+    state.cloudLastSnapshotHash = remoteHash;
+    state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || new Date().toISOString();
+    render();
+    setCloudSyncedStatus();
+  } catch {
+    // Keep local app fully usable even when cloud is unavailable.
+  } finally {
+    state.cloudSyncInFlight = false;
   }
 }
 

@@ -1,0 +1,11 @@
+{
+  "name": "tasknotes-sync-lambda",
+  "version": "1.0.0",
+  "private": true,
+  "main": "handler.js",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.868.0",
+    "@aws-sdk/lib-dynamodb": "^3.868.0"
+  }
+}

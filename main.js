@@ -1,10 +1,20 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const fs = require('fs/promises');
 const path = require('path');
+require('dotenv').config();
+const { CognitoIdentityProviderClient, InitiateAuthCommand, RespondToAuthChallengeCommand } = require('@aws-sdk/client-cognito-identity-provider');
 
 const DATA_FILE_NAME = 'task-manager-data.json';
 const DATA_SOURCE_FILE_NAME = 'tasknotes-data-source.json';
 const APP_VERSION = 1;
+const CLOUD_SYNC_URL = String(process.env.TASKNOTES_SYNC_URL || '').trim().replace(/\/+$/, '');
+const CLOUD_SYNC_API_KEY = String(process.env.TASKNOTES_SYNC_API_KEY || '').trim();
+const CLOUD_SYNC_TIMEOUT_MS = asInt(process.env.TASKNOTES_SYNC_TIMEOUT_MS, 12000);
+const COGNITO_REGION = String(process.env.TASKNOTES_COGNITO_REGION || '').trim();
+const COGNITO_CLIENT_ID = String(process.env.TASKNOTES_COGNITO_CLIENT_ID || '').trim();
+
+// In-memory Cognito token storage (never persisted to disk)
+let cognitoTokens = null; // { idToken, accessToken, refreshToken, expiresAt, email }
 
 let dataFilePath = '';
 let defaultDataFilePath = '';
@@ -374,6 +384,120 @@ async function saveData(nextData) {
   return { ok: true, savedAt: toIsoNow() };
 }
 
+function isCognitoConfigured() {
+  return Boolean(COGNITO_REGION && COGNITO_CLIENT_ID);
+}
+
+function isCloudSyncEnabled() {
+  return Boolean(CLOUD_SYNC_URL && (CLOUD_SYNC_API_KEY || isCognitoConfigured()));
+}
+
+function isCognitoTokenValid() {
+  return Boolean(cognitoTokens?.idToken && cognitoTokens.expiresAt > Date.now() + 30000);
+}
+
+async function refreshCognitoToken() {
+  if (!cognitoTokens?.refreshToken) return false;
+  try {
+    const client = new CognitoIdentityProviderClient({ region: COGNITO_REGION });
+    const cmd = new InitiateAuthCommand({
+      AuthFlow: 'REFRESH_TOKEN_AUTH',
+      ClientId: COGNITO_CLIENT_ID,
+      AuthParameters: { REFRESH_TOKEN: cognitoTokens.refreshToken }
+    });
+    const data = await client.send(cmd);
+    if (!data?.AuthenticationResult?.IdToken) return false;
+    cognitoTokens = {
+      ...cognitoTokens,
+      idToken: data.AuthenticationResult.IdToken,
+      accessToken: data.AuthenticationResult.AccessToken,
+      expiresAt: Date.now() + (data.AuthenticationResult.ExpiresIn || 3600) * 1000
+    };
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getCognitoIdToken() {
+  if (isCognitoTokenValid()) return cognitoTokens.idToken;
+  if (cognitoTokens?.refreshToken) {
+    const refreshed = await refreshCognitoToken();
+    if (refreshed) return cognitoTokens.idToken;
+  }
+  return null;
+}
+
+function makeCloudUrl(relativePath) {
+  return `${CLOUD_SYNC_URL}${relativePath}`;
+}
+
+async function cloudFetch(relativePath, options = {}) {
+  if (!CLOUD_SYNC_URL) {
+    return { ok: false, error: 'Cloud sync is not configured' };
+  }
+
+  let authHeaders = {};
+  if (isCognitoConfigured()) {
+    const idToken = await getCognitoIdToken();
+    if (!idToken) {
+      return { ok: false, error: 'Not logged in', code: 'UNAUTHENTICATED' };
+    }
+    authHeaders = { Authorization: `Bearer ${idToken}` };
+  } else if (CLOUD_SYNC_API_KEY) {
+    authHeaders = { 'x-api-key': CLOUD_SYNC_API_KEY };
+  } else {
+    return { ok: false, error: 'Cloud auth not configured' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLOUD_SYNC_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(makeCloudUrl(relativePath), {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        ...authHeaders,
+        ...(options.headers || {})
+      }
+    });
+
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { raw: text };
+      }
+    }
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error: payload?.error || `HTTP ${response.status}`
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      ...payload
+    };
+  } catch (error) {
+    const timeoutError = error?.name === 'AbortError';
+    return {
+      ok: false,
+      error: timeoutError ? 'Cloud request timed out' : (error?.message || 'Cloud request failed')
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1120,
@@ -416,8 +540,138 @@ ipcMain.handle('app:info', async () => {
     ...(await getActiveDataSourceMeta()),
     userDataPath: app.getPath('userData'),
     platform: process.platform,
-    appVersion: app.getVersion()
+    appVersion: app.getVersion(),
+    cloudSyncEnabled: isCloudSyncEnabled(),
+    cloudSyncMode: isCognitoConfigured() ? 'cognito' : 'shared-api-key'
   };
+});
+
+ipcMain.handle('cloud:status', async () => {
+  return {
+    ok: true,
+    enabled: isCloudSyncEnabled(),
+    mode: isCognitoConfigured() ? 'cognito' : 'shared-api-key',
+    apiUrl: CLOUD_SYNC_URL || '',
+    cognitoConfigured: isCognitoConfigured(),
+    loggedIn: Boolean(cognitoTokens?.idToken),
+    email: cognitoTokens?.email || ''
+  };
+});
+
+ipcMain.handle('auth:login', async (_event, { email, password }) => {
+  if (!isCognitoConfigured()) {
+    return { ok: false, error: 'Cognito is not configured' };
+  }
+  try {
+    const client = new CognitoIdentityProviderClient({ region: COGNITO_REGION });
+    const cmd = new InitiateAuthCommand({
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: COGNITO_CLIENT_ID,
+      AuthParameters: { USERNAME: email, PASSWORD: password }
+    });
+    const data = await client.send(cmd);
+    if (data?.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
+      return { ok: false, newPasswordRequired: true, session: data.Session, email };
+    }
+    const result = data?.AuthenticationResult;
+    if (!result?.IdToken) {
+      return { ok: false, error: `Risposta inattesa: ${data?.ChallengeName || 'nessun token'}` };
+    }
+    cognitoTokens = {
+      idToken: result.IdToken,
+      accessToken: result.AccessToken,
+      refreshToken: result.RefreshToken,
+      expiresAt: Date.now() + (result.ExpiresIn || 3600) * 1000,
+      email
+    };
+    return { ok: true, email };
+  } catch (err) {
+    const type = err?.name || '';
+    let msg = err?.message || 'Login failed';
+    if (type === 'NotAuthorizedException') msg = 'Email o password errati';
+    if (type === 'UserNotFoundException') msg = 'Utente non trovato';
+    if (type === 'UserNotConfirmedException') msg = 'Account non confermato';
+    return { ok: false, error: msg };
+  }
+});
+
+ipcMain.handle('auth:new-password', async (_event, { email, newPassword, session }) => {
+  if (!isCognitoConfigured()) return { ok: false, error: 'Cognito non configurato' };
+  try {
+    const client = new CognitoIdentityProviderClient({ region: COGNITO_REGION });
+    const cmd = new RespondToAuthChallengeCommand({
+      ChallengeName: 'NEW_PASSWORD_REQUIRED',
+      ClientId: COGNITO_CLIENT_ID,
+      Session: session,
+      ChallengeResponses: { USERNAME: email, NEW_PASSWORD: newPassword }
+    });
+    const data = await client.send(cmd);
+    const result = data?.AuthenticationResult;
+    if (!result?.IdToken) return { ok: false, error: 'Risposta inattesa dopo cambio password' };
+    cognitoTokens = {
+      idToken: result.IdToken,
+      accessToken: result.AccessToken,
+      refreshToken: result.RefreshToken,
+      expiresAt: Date.now() + (result.ExpiresIn || 3600) * 1000,
+      email
+    };
+    return { ok: true, email };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Errore cambio password' };
+  }
+});
+
+ipcMain.handle('auth:logout', async () => {
+  cognitoTokens = null;
+  return { ok: true };
+});
+
+ipcMain.handle('auth:status', async () => {
+  return {
+    ok: true,
+    cognitoConfigured: isCognitoConfigured(),
+    loggedIn: Boolean(cognitoTokens?.idToken),
+    email: cognitoTokens?.email || ''
+  };
+});
+
+ipcMain.handle('cloud:push', async (_event, payload) => {
+  const snapshot = sanitizeData(payload?.snapshot || payload?.data || payload || defaultData());
+  const clientUpdatedAt = typeof payload?.clientUpdatedAt === 'string' ? payload.clientUpdatedAt : toIsoNow();
+
+  return cloudFetch('/sync/push', {
+    method: 'POST',
+    body: JSON.stringify({
+      snapshot,
+      clientUpdatedAt
+    })
+  });
+});
+
+ipcMain.handle('cloud:pull', async (_event, payload) => {
+  const since = typeof payload?.since === 'string' ? payload.since : '';
+  const query = since ? `?since=${encodeURIComponent(since)}` : '';
+  const result = await cloudFetch(`/sync/pull${query}`, { method: 'GET' });
+
+  if (!result?.ok) {
+    return result;
+  }
+
+  if (result.snapshot) {
+    return {
+      ...result,
+      snapshot: sanitizeData(result.snapshot)
+    };
+  }
+
+  if (result.data) {
+    return {
+      ...result,
+      data: sanitizeData(result.data)
+    };
+  }
+
+  return result;
 });
 
 ipcMain.handle('data:select-file', async () => {
