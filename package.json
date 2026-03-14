@@ -1,13 +1,13 @@
 {
   "name": "tasknotes-electron",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "Fast local task and notes manager with Electron and JSON file persistence",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "build": "electron-builder",
-    "build:mac": "electron-builder --mac dmg zip",
+    "build": "rm -rf dist && electron-builder",
+    "build:mac": "rm -rf dist && electron-builder --mac dmg zip",
     "build:win": "electron-builder --win nsis portable"
   },
   "keywords": [
@@ -26,6 +26,9 @@
       "preload.js",
       "src/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      { "from": ".env", "to": ".env" }
     ],
     "directories": {
       "output": "dist"
@@ -65,6 +68,7 @@
     "electron-builder": "^25.1.8"
   },
   "dependencies": {
-    "@aws-sdk/client-cognito-identity-provider": "^3.1009.0"
+    "@aws-sdk/client-cognito-identity-provider": "^3.1009.0",
+    "dotenv": "^17.3.1"
   }
 }

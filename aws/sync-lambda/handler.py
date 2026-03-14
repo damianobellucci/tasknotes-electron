@@ -1,5 +1,6 @@
 import json
 import os
+from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,14 @@ AUTH_MODE = os.getenv("AUTH_MODE", "hybrid").strip().lower()
 dynamodb = boto3.resource("dynamodb")
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _json_response(status_code: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "statusCode": status_code,
@@ -23,7 +32,7 @@ def _json_response(status_code: int, payload: Dict[str, Any]) -> Dict[str, Any]:
             "access-control-allow-methods": "OPTIONS,GET,POST",
             "access-control-allow-headers": "content-type,x-api-key",
         },
-        "body": json.dumps(payload),
+        "body": json.dumps(payload, default=_json_default),
     }
 
 
@@ -111,7 +120,23 @@ def _read_snapshot(user_id: str) -> Optional[Dict[str, Any]]:
     return result.get("Item")
 
 
-def _write_snapshot(user_id: str, snapshot: Dict[str, Any], client_updated_at: Optional[str]) -> str:
+def _write_snapshot(
+    user_id: str,
+    snapshot: Dict[str, Any],
+    client_updated_at: Optional[str],
+    base_server_updated_at: Optional[str],
+) -> Dict[str, Any]:
+    current = _read_snapshot(user_id)
+    current_server_updated_at = (current or {}).get("serverUpdatedAt") or ""
+
+    if current and current_server_updated_at != (base_server_updated_at or ""):
+        return {
+            "ok": False,
+            "conflict": True,
+            "snapshot": current.get("snapshot"),
+            "serverUpdatedAt": current_server_updated_at,
+        }
+
     server_updated_at = datetime.now(timezone.utc).isoformat()
     _table().put_item(
         Item={
@@ -122,7 +147,7 @@ def _write_snapshot(user_id: str, snapshot: Dict[str, Any], client_updated_at: O
             "serverUpdatedAt": server_updated_at,
         }
     )
-    return server_updated_at
+    return {"ok": True, "serverUpdatedAt": server_updated_at}
 
 
 def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
@@ -152,12 +177,38 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 
             snapshot = body.get("snapshot")
             client_updated_at = body.get("clientUpdatedAt")
+            base_server_updated_at = body.get("baseServerUpdatedAt")
 
             if not isinstance(snapshot, dict):
                 return _json_response(400, {"ok": False, "error": "Missing snapshot object"})
 
-            server_updated_at = _write_snapshot(user_id, snapshot, client_updated_at)
-            return _json_response(200, {"ok": True, "serverUpdatedAt": server_updated_at, "authType": auth.get("authType")})
+            write_result = _write_snapshot(
+                user_id,
+                snapshot,
+                client_updated_at,
+                base_server_updated_at,
+            )
+            if write_result.get("conflict"):
+                return _json_response(
+                    409,
+                    {
+                        "ok": False,
+                        "conflict": True,
+                        "error": "Sync conflict",
+                        "snapshot": write_result.get("snapshot"),
+                        "serverUpdatedAt": write_result.get("serverUpdatedAt"),
+                        "authType": auth.get("authType"),
+                    },
+                )
+
+            return _json_response(
+                200,
+                {
+                    "ok": True,
+                    "serverUpdatedAt": write_result.get("serverUpdatedAt"),
+                    "authType": auth.get("authType"),
+                },
+            )
 
         if method == "GET" and path.endswith("/sync/pull"):
             query = event.get("queryStringParameters") or {}

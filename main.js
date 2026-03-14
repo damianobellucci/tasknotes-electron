@@ -1,7 +1,14 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const fs = require('fs/promises');
 const path = require('path');
-require('dotenv').config();
+try {
+  const _envPath = app.isPackaged
+    ? path.join(process.resourcesPath, '.env')
+    : path.join(__dirname, '.env');
+  require('dotenv').config({ path: _envPath });
+} catch {
+  // dotenv is optional in packaged builds.
+}
 const { CognitoIdentityProviderClient, InitiateAuthCommand, RespondToAuthChallengeCommand } = require('@aws-sdk/client-cognito-identity-provider');
 
 const DATA_FILE_NAME = 'task-manager-data.json';
@@ -37,6 +44,10 @@ function defaultData() {
     settings: {
       taskSort: 'manual',
       noteSort: 'manual'
+    },
+    sync: {
+      serverUpdatedAt: '',
+      lastSyncedSnapshot: null
     },
     version: APP_VERSION
   };
@@ -122,7 +133,7 @@ function sanitizeNote(note, index) {
   };
 }
 
-function sanitizeData(rawData) {
+function sanitizeSnapshot(rawData) {
   const base = defaultData();
   const tasks = Array.isArray(rawData?.tasks) ? rawData.tasks.map(sanitizeTask) : [];
   const notes = Array.isArray(rawData?.notes) ? rawData.notes.map(sanitizeNote) : [];
@@ -148,6 +159,25 @@ function sanitizeData(rawData) {
     tags,
     settings,
     version: APP_VERSION
+  };
+}
+
+function sanitizeSyncState(rawSync) {
+  const lastSyncedSnapshot = rawSync?.lastSyncedSnapshot && typeof rawSync.lastSyncedSnapshot === 'object'
+    ? sanitizeSnapshot(rawSync.lastSyncedSnapshot)
+    : null;
+
+  return {
+    serverUpdatedAt: typeof rawSync?.serverUpdatedAt === 'string' ? rawSync.serverUpdatedAt : '',
+    lastSyncedSnapshot
+  };
+}
+
+function sanitizeData(rawData) {
+  const snapshot = sanitizeSnapshot(rawData);
+  return {
+    ...snapshot,
+    sync: sanitizeSyncState(rawData?.sync)
   };
 }
 
@@ -478,7 +508,8 @@ async function cloudFetch(relativePath, options = {}) {
       return {
         ok: false,
         status: response.status,
-        error: payload?.error || `HTTP ${response.status}`
+        error: payload?.error || `HTTP ${response.status}`,
+        ...payload
       };
     }
 
@@ -636,16 +667,27 @@ ipcMain.handle('auth:status', async () => {
 });
 
 ipcMain.handle('cloud:push', async (_event, payload) => {
-  const snapshot = sanitizeData(payload?.snapshot || payload?.data || payload || defaultData());
+  const snapshot = sanitizeSnapshot(payload?.snapshot || payload?.data || payload || defaultData());
   const clientUpdatedAt = typeof payload?.clientUpdatedAt === 'string' ? payload.clientUpdatedAt : toIsoNow();
+  const baseServerUpdatedAt = typeof payload?.baseServerUpdatedAt === 'string' ? payload.baseServerUpdatedAt : '';
 
-  return cloudFetch('/sync/push', {
+  const result = await cloudFetch('/sync/push', {
     method: 'POST',
     body: JSON.stringify({
       snapshot,
-      clientUpdatedAt
+      clientUpdatedAt,
+      baseServerUpdatedAt
     })
   });
+
+  if (result?.snapshot) {
+    return {
+      ...result,
+      snapshot: sanitizeSnapshot(result.snapshot)
+    };
+  }
+
+  return result;
 });
 
 ipcMain.handle('cloud:pull', async (_event, payload) => {
@@ -660,14 +702,14 @@ ipcMain.handle('cloud:pull', async (_event, payload) => {
   if (result.snapshot) {
     return {
       ...result,
-      snapshot: sanitizeData(result.snapshot)
+      snapshot: sanitizeSnapshot(result.snapshot)
     };
   }
 
   if (result.data) {
     return {
       ...result,
-      data: sanitizeData(result.data)
+      data: sanitizeSnapshot(result.data)
     };
   }
 

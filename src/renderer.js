@@ -31,8 +31,11 @@ const state = {
   cloudSyncInFlight: false,
   cloudSyncPendingPush: false,
   cloudSyncTimer: null,
+  cloudRetryTimer: null,
   cloudLastSyncAt: '',
+  cloudServerUpdatedAt: '',
   cloudLastSnapshotHash: '',
+  cloudBaseSnapshot: null,
   authLoggedIn: false,
   authEmail: ''
 };
@@ -785,7 +788,8 @@ function queueSave() {
 }
 
 async function saveNow() {
-  const payload = getSerializableState();
+  const payload = getPersistedState();
+  const snapshot = getSerializableState();
 
   if (state.saveInFlight) {
     state.pendingSave = true;
@@ -795,7 +799,7 @@ async function saveNow() {
   state.saveInFlight = true;
   try {
     await window.electronAPI.saveData(payload);
-    queueCloudPush(payload);
+    queueCloudPush(snapshot);
     setStatus('All changes saved');
   } catch (error) {
     setStatus(`Save error: ${error.message}`);
@@ -1120,6 +1124,7 @@ async function onLogout() {
   state.authLoggedIn = false;
   state.authEmail = '';
   state.cloudSyncEnabled = false;
+  clearCloudRetry();
   if (state.cloudSyncTimer) {
     clearInterval(state.cloudSyncTimer);
     state.cloudSyncTimer = null;
@@ -1146,6 +1151,10 @@ async function initCloudSync() {
     }
 
     await pullFromCloud();
+    const localSnapshot = getSerializableState();
+    if (hasUnsyncedLocalChanges(localSnapshot)) {
+      queueCloudPush(localSnapshot);
+    }
     state.cloudSyncTimer = setInterval(() => {
       pullFromCloud();
     }, CLOUD_SYNC_INTERVAL_MS);
@@ -1168,7 +1177,7 @@ function queueCloudPush(payload) {
   void pushToCloud(snapshot, snapshotHash);
 }
 
-async function pushToCloud(snapshot, snapshotHash) {
+async function pushToCloud(snapshot, snapshotHash, baseServerUpdatedAt = state.cloudServerUpdatedAt || '') {
   if (state.cloudSyncInFlight) {
     state.cloudSyncPendingPush = true;
     return;
@@ -1178,27 +1187,39 @@ async function pushToCloud(snapshot, snapshotHash) {
   try {
     const result = await window.electronAPI.cloudPush({
       snapshot,
-      clientUpdatedAt: new Date().toISOString()
+      clientUpdatedAt: new Date().toISOString(),
+      baseServerUpdatedAt
     });
 
-    if (!result?.ok) {
-      setStatus(`Cloud sync pending: ${result?.error || 'push failed'}`);
-      state.cloudSyncPendingPush = true;
+    if (result?.conflict && result?.snapshot) {
+      await resolveCloudConflict(snapshot, snapshotHash, result.snapshot, result.serverUpdatedAt || '');
       return;
     }
 
+    if (!result?.ok) {
+      const retryDelayMs = result?.status === 429 ? 5000 : 15000;
+      setStatus(result?.status === 429 ? 'Cloud sync throttled, retrying soon...' : `Cloud sync pending: ${result?.error || 'push failed'}`);
+      scheduleCloudRetry(retryDelayMs);
+      return;
+    }
+
+    clearCloudRetry();
     state.cloudLastSnapshotHash = snapshotHash;
+    state.cloudBaseSnapshot = cloneSnapshot(snapshot);
+    state.cloudServerUpdatedAt = result.serverUpdatedAt || '';
     state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || new Date().toISOString();
+    await persistStateToDisk();
     setCloudSyncedStatus();
   } catch (error) {
     setStatus(`Cloud sync pending: ${error.message}`);
-    state.cloudSyncPendingPush = true;
+    scheduleCloudRetry(15000);
   } finally {
     state.cloudSyncInFlight = false;
 
     if (state.cloudSyncPendingPush) {
       state.cloudSyncPendingPush = false;
-      void pushToCloud(getSerializableState(), JSON.stringify(getSerializableState()));
+      const nextSnapshot = getSerializableState();
+      void pushToCloud(nextSnapshot, JSON.stringify(nextSnapshot));
     }
   }
 }
@@ -1210,8 +1231,11 @@ async function pullFromCloud() {
 
   state.cloudSyncInFlight = true;
   try {
-    const result = await window.electronAPI.cloudPull({ since: state.cloudLastSyncAt || '' });
+    const result = await window.electronAPI.cloudPull({ since: state.cloudServerUpdatedAt || '' });
     if (!result?.ok) {
+      if (result?.status === 429) {
+        setStatus('Cloud sync throttled, retrying later...');
+      }
       return;
     }
 
@@ -1223,21 +1247,72 @@ async function pullFromCloud() {
     const remoteHash = JSON.stringify(remoteData);
     const localHash = JSON.stringify(getSerializableState());
     if (remoteHash === localHash) {
+      state.cloudBaseSnapshot = cloneSnapshot(remoteData);
+      state.cloudServerUpdatedAt = result.serverUpdatedAt || '';
+      state.cloudLastSnapshotHash = remoteHash;
       state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || state.cloudLastSyncAt;
+      await persistStateToDisk();
       return;
     }
 
-    applyLoadedData(remoteData);
-    await window.electronAPI.saveData(getSerializableState());
+    const mergeResult = mergeSnapshots(state.cloudBaseSnapshot, getSerializableState(), remoteData);
+    state.cloudBaseSnapshot = cloneSnapshot(remoteData);
+    state.cloudServerUpdatedAt = result.serverUpdatedAt || '';
     state.cloudLastSnapshotHash = remoteHash;
-    state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || new Date().toISOString();
+    applyLoadedData({
+      ...mergeResult.snapshot,
+      sync: {
+        serverUpdatedAt: state.cloudServerUpdatedAt,
+        lastSyncedSnapshot: state.cloudBaseSnapshot
+      }
+    });
+    await persistStateToDisk();
     render();
+    if (mergeResult.conflicts > 0) {
+      showToast(`Cloud conflict merged: kept ${mergeResult.conflicts} duplicate ${mergeResult.conflicts === 1 ? 'copy' : 'copies'}`, false);
+      setStatus('Cloud conflict merged locally, sync pending');
+      queueCloudPush(mergeResult.snapshot);
+      return;
+    }
+
+    if (hasUnsyncedLocalChanges(mergeResult.snapshot)) {
+      setStatus('Cloud changes merged locally, sync pending');
+      queueCloudPush(mergeResult.snapshot);
+      return;
+    }
+
+    state.cloudLastSyncAt = result.serverUpdatedAt || result.syncedAt || new Date().toISOString();
     setCloudSyncedStatus();
   } catch {
     // Keep local app fully usable even when cloud is unavailable.
   } finally {
     state.cloudSyncInFlight = false;
   }
+}
+
+async function resolveCloudConflict(localSnapshot, snapshotHash, remoteSnapshot, serverUpdatedAt) {
+  const mergeResult = mergeSnapshots(state.cloudBaseSnapshot, localSnapshot, remoteSnapshot);
+
+  state.cloudBaseSnapshot = cloneSnapshot(remoteSnapshot);
+  state.cloudServerUpdatedAt = serverUpdatedAt || '';
+  state.cloudLastSnapshotHash = JSON.stringify(remoteSnapshot);
+  applyLoadedData({
+    ...mergeResult.snapshot,
+    sync: {
+      serverUpdatedAt: state.cloudServerUpdatedAt,
+      lastSyncedSnapshot: state.cloudBaseSnapshot
+    }
+  });
+  await persistStateToDisk();
+  render();
+
+  if (mergeResult.conflicts > 0) {
+    showToast(`Cloud conflict merged: kept ${mergeResult.conflicts} duplicate ${mergeResult.conflicts === 1 ? 'copy' : 'copies'}`, false);
+  }
+
+  setStatus('Cloud conflict merged locally, retrying sync...');
+  const mergedSnapshotHash = JSON.stringify(mergeResult.snapshot);
+  await pushToCloud(mergeResult.snapshot, mergedSnapshotHash, state.cloudServerUpdatedAt || '');
 }
 
 function applyLoadedData(data) {
@@ -1249,6 +1324,9 @@ function applyLoadedData(data) {
     ...data?.settings
   };
   state.version = data?.version || state.version;
+  state.cloudServerUpdatedAt = typeof data?.sync?.serverUpdatedAt === 'string' ? data.sync.serverUpdatedAt : '';
+  state.cloudBaseSnapshot = data?.sync?.lastSyncedSnapshot ? cloneSnapshot(data.sync.lastSyncedSnapshot) : null;
+  state.cloudLastSnapshotHash = state.cloudBaseSnapshot ? JSON.stringify(state.cloudBaseSnapshot) : '';
 }
 
 function applyDataSourceInfo(info) {
@@ -1368,6 +1446,149 @@ function getSerializableState() {
     settings: state.settings,
     version: state.version
   };
+}
+
+function getPersistedState() {
+  return {
+    ...getSerializableState(),
+    sync: {
+      serverUpdatedAt: state.cloudServerUpdatedAt || '',
+      lastSyncedSnapshot: state.cloudBaseSnapshot ? cloneSnapshot(state.cloudBaseSnapshot) : null
+    }
+  };
+}
+
+async function persistStateToDisk() {
+  await window.electronAPI.saveData(getPersistedState());
+}
+
+function hasUnsyncedLocalChanges(snapshot = getSerializableState()) {
+  if (!state.cloudBaseSnapshot) {
+    return snapshot.tasks.length > 0
+      || snapshot.notes.length > 0
+      || snapshot.tags.length > 0
+      || snapshot.settings.taskSort !== 'manual'
+      || snapshot.settings.noteSort !== 'manual';
+  }
+
+  return JSON.stringify(snapshot) !== JSON.stringify(state.cloudBaseSnapshot);
+}
+
+function cloneSnapshot(snapshot) {
+  return snapshot ? JSON.parse(JSON.stringify(snapshot)) : null;
+}
+
+function mergeSnapshots(baseSnapshot, localSnapshot, remoteSnapshot) {
+  const base = baseSnapshot || { tasks: [], notes: [], tags: [], settings: { taskSort: 'manual', noteSort: 'manual' }, version: 1 };
+  const local = localSnapshot || { tasks: [], notes: [], tags: [], settings: { taskSort: 'manual', noteSort: 'manual' }, version: 1 };
+  const remote = remoteSnapshot || { tasks: [], notes: [], tags: [], settings: { taskSort: 'manual', noteSort: 'manual' }, version: 1 };
+
+  const taskMerge = mergeItemCollections(base.tasks, local.tasks, remote.tasks);
+  const noteMerge = mergeItemCollections(base.notes, local.notes, remote.notes);
+  const localSettingsChanged = JSON.stringify(local.settings || {}) !== JSON.stringify(base.settings || {});
+  const remoteSettingsChanged = JSON.stringify(remote.settings || {}) !== JSON.stringify(base.settings || {});
+
+  return {
+    snapshot: {
+      tasks: taskMerge.items,
+      notes: noteMerge.items,
+      tags: sanitizeTagList([...(remote.tags || []), ...(local.tags || []), ...(base.tags || [])]),
+      settings: localSettingsChanged ? { ...(remote.settings || {}), ...(local.settings || {}) } : { ...(remoteSettingsChanged ? remote.settings : local.settings) },
+      version: Math.max(base.version || 1, local.version || 1, remote.version || 1)
+    },
+    conflicts: taskMerge.conflicts + noteMerge.conflicts
+  };
+}
+
+function mergeItemCollections(baseItems = [], localItems = [], remoteItems = []) {
+  const baseMap = new Map(baseItems.map((item) => [item.id, item]));
+  const localMap = new Map(localItems.map((item) => [item.id, item]));
+  const remoteMap = new Map(remoteItems.map((item) => [item.id, item]));
+  const orderedIds = [];
+  const seen = new Set();
+
+  [remoteItems, localItems, baseItems].forEach((items) => {
+    items.forEach((item) => {
+      if (!item?.id || seen.has(item.id)) {
+        return;
+      }
+      seen.add(item.id);
+      orderedIds.push(item.id);
+    });
+  });
+
+  const merged = [];
+  let conflicts = 0;
+
+  orderedIds.forEach((id) => {
+    const baseItem = baseMap.get(id) || null;
+    const localItem = localMap.get(id) || null;
+    const remoteItem = remoteMap.get(id) || null;
+    const localChanged = hasItemChanged(baseItem, localItem);
+    const remoteChanged = hasItemChanged(baseItem, remoteItem);
+
+    if (!localChanged && !remoteChanged) {
+      if (remoteItem || localItem || baseItem) {
+        merged.push(cloneSnapshot(remoteItem || localItem || baseItem));
+      }
+      return;
+    }
+
+    if (localChanged && !remoteChanged) {
+      if (localItem) {
+        merged.push(cloneSnapshot(localItem));
+      }
+      return;
+    }
+
+    if (!localChanged && remoteChanged) {
+      if (remoteItem) {
+        merged.push(cloneSnapshot(remoteItem));
+      }
+      return;
+    }
+
+    if (areItemsEqual(localItem, remoteItem)) {
+      if (localItem || remoteItem) {
+        merged.push(cloneSnapshot(localItem || remoteItem));
+      }
+      return;
+    }
+
+    if (remoteItem) {
+      merged.push(cloneSnapshot(remoteItem));
+    }
+    if (localItem) {
+      merged.push(createConflictCopy(localItem));
+      conflicts += 1;
+    }
+  });
+
+  resequenceManualOrder(merged);
+  return { items: merged, conflicts };
+}
+
+function hasItemChanged(baseItem, currentItem) {
+  if (!baseItem && !currentItem) {
+    return false;
+  }
+  if (!baseItem || !currentItem) {
+    return true;
+  }
+  return !areItemsEqual(baseItem, currentItem);
+}
+
+function areItemsEqual(left, right) {
+  return JSON.stringify(left || null) === JSON.stringify(right || null);
+}
+
+function createConflictCopy(item) {
+  const copy = cloneSnapshot(item);
+  const prefix = '[Conflict copy] ';
+  copy.id = generateId(copy.type === 'task' ? 'task' : 'note');
+  copy.text = copy.text && copy.text.startsWith(prefix) ? copy.text : `${prefix}${copy.text || ''}`;
+  copy.updatedAt = new Date().toISOString();
+  return copy;
 }
 
 function renderGlobalTagsBar() {
@@ -1623,6 +1844,28 @@ function hideToast() {
 
 function setStatus(message) {
   refs.statusText.textContent = message;
+}
+
+function clearCloudRetry() {
+  if (!state.cloudRetryTimer) {
+    return;
+  }
+
+  clearTimeout(state.cloudRetryTimer);
+  state.cloudRetryTimer = null;
+}
+
+function scheduleCloudRetry(delayMs) {
+  if (!state.cloudSyncEnabled) {
+    return;
+  }
+
+  clearCloudRetry();
+  state.cloudRetryTimer = setTimeout(() => {
+    state.cloudRetryTimer = null;
+    const snapshot = getSerializableState();
+    void pushToCloud(snapshot, JSON.stringify(snapshot));
+  }, delayMs);
 }
 
 function generateId(prefix) {

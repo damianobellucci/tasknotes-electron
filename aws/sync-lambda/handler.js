@@ -115,7 +115,19 @@ async function readSnapshot(userId) {
   return result.Item || null;
 }
 
-async function writeSnapshot(userId, snapshot, clientUpdatedAt) {
+async function writeSnapshot(userId, snapshot, clientUpdatedAt, baseServerUpdatedAt) {
+  const current = await readSnapshot(userId);
+  const currentServerUpdatedAt = current?.serverUpdatedAt || '';
+
+  if (current && currentServerUpdatedAt !== (baseServerUpdatedAt || '')) {
+    return {
+      ok: false,
+      conflict: true,
+      snapshot: current.snapshot || null,
+      serverUpdatedAt: currentServerUpdatedAt
+    };
+  }
+
   const serverUpdatedAt = new Date().toISOString();
 
   await ddb.send(
@@ -131,7 +143,10 @@ async function writeSnapshot(userId, snapshot, clientUpdatedAt) {
     })
   );
 
-  return serverUpdatedAt;
+  return {
+    ok: true,
+    serverUpdatedAt
+  };
 }
 
 function isMissingConfig() {
@@ -171,13 +186,24 @@ exports.handler = async (event) => {
         return json(400, { ok: false, error: 'Invalid JSON payload' });
       }
 
-      const { snapshot, clientUpdatedAt } = body;
+      const { snapshot, clientUpdatedAt, baseServerUpdatedAt } = body;
       if (!snapshot || typeof snapshot !== 'object') {
         return json(400, { ok: false, error: 'Missing snapshot object' });
       }
 
-      const serverUpdatedAt = await writeSnapshot(userId, snapshot, clientUpdatedAt);
-      return json(200, { ok: true, serverUpdatedAt, authType: auth.authType });
+      const writeResult = await writeSnapshot(userId, snapshot, clientUpdatedAt, baseServerUpdatedAt);
+      if (writeResult.conflict) {
+        return json(409, {
+          ok: false,
+          conflict: true,
+          error: 'Sync conflict',
+          snapshot: writeResult.snapshot,
+          serverUpdatedAt: writeResult.serverUpdatedAt,
+          authType: auth.authType
+        });
+      }
+
+      return json(200, { ok: true, serverUpdatedAt: writeResult.serverUpdatedAt, authType: auth.authType });
     }
 
     if (method === 'GET' && path.endsWith('/sync/pull')) {
