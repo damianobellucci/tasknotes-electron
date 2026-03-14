@@ -47,17 +47,34 @@ Main components:
 - Owns cloud fetch and request signing/headers
 - Owns validation and sanitization before persistence
 
+Current module split:
+- `main.js`: Electron lifecycle, IPC registration, top-level orchestration
+- `src/main-auth-session.js`: Cognito login/logout/new-password flow, token refresh, session persistence, session restore
+- `src/main-cloud-service.js`: cloud status, authenticated fetch, sync transport abstraction
+
 ### 4.2 Renderer responsibilities
 - Owns UI state and interactions
 - Owns save scheduling and local change detection
 - Owns sync orchestration calls through exposed IPC APIs
 - Owns three-way merge strategy for conflict scenarios
 
+Current module split:
+- `src/renderer.js`: primary UI state, rendering, CRUD, data-source UX, app coordination
+- `src/tag-utils.js`: tag normalization and deduplication helpers
+- `src/sync-merge.js`: pure snapshot merge and unsynced-change utilities
+- `src/auth-sync-controller.js`: auth modal flow, logout flow, cloud sync orchestration, retry handling
+
 ### 4.3 Backend responsibilities
 - Accepts push and pull sync requests
 - Resolves authorization mode
 - Detects write conflicts using baseServerUpdatedAt
 - Returns structured conflict payload for client merge
+
+### 4.4 Refactoring principles
+- Keep behavior stable while moving logic behind explicit module boundaries.
+- Prefer pure utility modules for merge and normalization logic.
+- Keep Electron-specific wiring at the edges (`main.js`, `renderer.js`).
+- Make future automated tests target extracted modules first.
 
 ## 5. Data Model Requirements
 ### 5.1 Snapshot model
@@ -193,6 +210,11 @@ Local usage must continue even when cloud auth or network is unavailable.
 ### 12.3 Compatibility requirements
 IPC changes must preserve backward compatibility or include versioned migration plan.
 
+### 12.4 Module boundary requirements
+- Renderer utility modules must not call Electron APIs directly.
+- Auth/session concerns must remain isolated from data persistence concerns in the main process.
+- Cloud transport concerns must not own UI-facing merge policy.
+
 ## 13. Backend Requirements (Lambda)
 ### TR-22 Authorization resolution
 Lambda must resolve identity according to configured mode and reject unauthorized requests.
@@ -250,6 +272,8 @@ Operational issues must be reproducible using logs, status codes, and determinis
 - Sanitization functions
 - Merge logic and conflict copy behavior
 - Tag normalization and deduplication
+- Auth/session state transitions in extracted session manager
+- Cloud transport error mapping in extracted cloud service
 
 ### 17.2 Integration-level focus areas
 - login then restart then auto-restored session
@@ -258,6 +282,7 @@ Operational issues must be reproducible using logs, status codes, and determinis
 - push and pull nominal path
 - conflict 409 path and merge outcome
 - retry and backoff behavior for 429 and timeouts
+- renderer-to-main IPC continuity after module extraction
 
 ### 17.3 Manual smoke requirements
 - task/note create edit delete restore
@@ -271,6 +296,11 @@ Release candidate is blocked if any of these fail:
 - account isolation behavior
 - conflict no-data-loss behavior
 - startup local persistence integrity
+
+### 17.5 Current testing status
+- Syntax-level checks are currently used as a lightweight guardrail during refactoring.
+- Manual smoke tests are required after each structural extraction.
+- A dedicated automated test framework is not yet installed and remains a recommended next step.
 
 ## 18. Build and Release Requirements
 ### TR-38 Versioning
@@ -295,6 +325,8 @@ Build scripts should clear stale artifacts before packaging.
 - Add stronger automated end-to-end coverage for multi-account transitions
 - Evaluate encrypted fallback strategy where safe storage is unavailable
 - Add optional telemetry for reliability metrics and bottleneck analysis
+- Continue reducing renderer and main orchestration size through targeted extractions only when boundaries are clear.
+- Introduce unit tests around extracted modules before further major architectural changes.
 
 ## 21. Acceptance Criteria Summary
 A release is technically acceptable only if:

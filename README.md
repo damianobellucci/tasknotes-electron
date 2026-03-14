@@ -24,6 +24,19 @@ TaskNotes is a fast local desktop app for managing work tasks and notes with aut
 - `src/index.html`
 - `src/styles.css`
 - `src/renderer.js`
+- `src/tag-utils.js`
+- `src/sync-merge.js`
+- `src/auth-sync-controller.js`
+- `src/main-auth-session.js`
+- `src/main-cloud-service.js`
+- `docs/BUSINESS_REQUIREMENTS.md`
+- `docs/TECHNICAL_REQUIREMENTS_RND.md`
+
+## Documentation
+
+- Business requirements: `docs/BUSINESS_REQUIREMENTS.md`
+- Technical requirements: `docs/TECHNICAL_REQUIREMENTS_RND.md`
+- Release history: `CHANGELOG.md`
 
 ## Install
 
@@ -153,9 +166,20 @@ Produced artifacts:
 
 ## Notes on Architecture
 
-- `main.js`: Electron lifecycle, secure IPC handlers, file I/O, import/export dialogs.
+- `main.js`: Electron lifecycle and IPC registration/orchestration.
+- `src/main-auth-session.js`: Cognito auth lifecycle, token refresh, session persistence.
+- `src/main-cloud-service.js`: authenticated cloud transport and cloud status handling.
 - `preload.js`: limited API exposure via `contextBridge`.
-- `renderer.js`: UI state, rendering, inline editing, sorting, drag/drop, auto-save.
+- `renderer.js`: primary UI state, rendering, inline editing, sorting, drag/drop, auto-save.
+- `src/tag-utils.js`: tag normalization and deduplication helpers.
+- `src/sync-merge.js`: sync merge utilities and unsynced-change helpers.
+- `src/auth-sync-controller.js`: auth modal and cloud sync orchestration for the renderer.
+
+## Testing Status
+
+- There is currently no dedicated automated test framework configured in the project.
+- Refactoring work is validated with syntax checks and manual app smoke tests.
+- Recommended next step: add automated unit tests for extracted modules and integration coverage for auth/sync flows.
 
 Security defaults:
 

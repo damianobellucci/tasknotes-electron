@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.1.2] - 2026-03-14
+
+### Added
+- Dedicated renderer utility modules for tag normalization, sync merge logic, and auth/cloud orchestration.
+- Dedicated main-process modules for Cognito session management and cloud transport handling.
+- Expanded technical documentation covering the refactored architecture and current testing status.
+
+### Changed
+- Reduced the size and responsibility surface of `renderer.js` by moving auth, sync, and utility logic into focused modules.
+- Reduced the size and responsibility surface of `main.js` by moving session and cloud concerns into focused services.
+- Updated the README to reflect the current project structure and documentation layout.
+
+### Fixed
+- Preserved runtime behavior while improving maintainability through incremental refactoring.
+
 ## [1.1.1] - 2026-03-14
 
 ### Added
